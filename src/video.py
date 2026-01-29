@@ -137,6 +137,13 @@ def download_video(video_id: str, output_dir: Optional[str] = None) -> Tuple[Opt
         'noplaylist': True,
         'ffmpeg_location': FFMPEG_PATH,
         'js_runtimes': {'node': {}},
+        'remote_components': ['ejs:github'],
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['web_safari', 'web', 'android_embedded'],
+                'player_skip': ['web_creator', 'tv_downgraded']
+            }
+        },
         **config
     }
     
