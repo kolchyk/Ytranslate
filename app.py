@@ -1,15 +1,42 @@
+"""
+YTranslate - YouTube Video Translator
+Streamlit web application for translating and dubbing YouTube videos.
+"""
 import streamlit as st
 import os
 import tempfile
+import logging
+from contextlib import contextmanager
+from typing import Optional, Tuple
+
 from src.youtube import extract_video_id, get_transcript, format_transcript_for_translation
 from src.translator import translate_transcript_chunks
-from src.tts import create_full_audio
+from src.tts import create_full_audio, create_audio_for_video
+from src.video import download_video, merge_audio_video, get_video_duration, cleanup_temp_dir
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 st.set_page_config(page_title="YTranslate - YouTube Video Translator", page_icon="🎥")
+
+
+@contextmanager
+def temp_directory():
+    """Context manager for temporary directory with automatic cleanup."""
+    temp_dir = tempfile.mkdtemp(prefix="ytranslate_")
+    try:
+        yield temp_dir
+    finally:
+        cleanup_temp_dir(temp_dir)
+
 
 def main():
     st.title("🎥 YTranslate")
@@ -23,13 +50,52 @@ def main():
         return
 
     # User Input
-    video_url = st.text_input("Введите URL YouTube видео:", placeholder="https://www.youtube.com/watch?v=...")
-    
-    target_language = st.selectbox(
-        "Выберите язык перевода:",
-        options=["ru", "uk"],
-        format_func=lambda x: "Русский" if x == "ru" else "Украинский"
+    video_url = st.text_input(
+        "Введите URL YouTube видео:",
+        placeholder="https://www.youtube.com/watch?v=..."
     )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        target_language = st.selectbox(
+            "Выберите язык перевода:",
+            options=["ru", "uk"],
+            format_func=lambda x: "Русский" if x == "ru" else "Украинский"
+        )
+    
+    with col2:
+        output_format = st.selectbox(
+            "Формат вывода:",
+            options=["audio", "video"],
+            format_func=lambda x: "Только аудио (MP3)" if x == "audio" else "Видео с озвучкой (MP4)"
+        )
+    
+    # Advanced options
+    with st.expander("Расширенные настройки"):
+        voice = st.selectbox(
+            "Голос озвучки:",
+            options=["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
+            index=0
+        )
+        
+        if output_format == "video":
+            keep_original_audio = st.checkbox(
+                "Сохранить оригинальное аудио на фоне",
+                value=True,
+                help="Оригинальный звук будет приглушен и добавлен на фон"
+            )
+            original_volume = st.slider(
+                "Громкость оригинального звука:",
+                min_value=0.0,
+                max_value=0.5,
+                value=0.1,
+                step=0.05,
+                disabled=not keep_original_audio
+            )
+        else:
+            keep_original_audio = False
+            original_volume = 0.0
     
     if st.button("Перевести и озвучить", type="primary"):
         if not video_url:
@@ -40,60 +106,137 @@ def main():
         if not video_id:
             st.error("Неверный формат URL YouTube.")
             return
-            
-        process_video(video_id, target_language)
-
-def process_video(video_id, target_language):
-    try:
-        with st.status("Обработка видео...", expanded=True) as status:
-            # 1. Get Transcript
-            st.write("Получение субтитров...")
-            transcript = get_transcript(video_id)
-            if not transcript:
-                st.error("Для этого видео субтитры недоступны.")
-                status.update(label="Ошибка!", state="error")
-                return
-            
-            # 2. Format Transcript
-            st.write("Подготовка текста...")
-            chunks = format_transcript_for_translation(transcript)
-            
-            # 3. Translate
-            st.write(f"Перевод на {'русский' if target_language == 'ru' else 'украинский'} язык...")
-            translated_chunks = translate_transcript_chunks(chunks, target_language)
-            
-            # 4. TTS
-            st.write("Генерация озвучки (OpenAI TTS)...")
-            
-            # Use a temporary file for the output audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
-                output_path = tmp_file.name
-                
-            create_full_audio(translated_chunks, output_path)
-            
-            status.update(label="Готово!", state="complete", expanded=False)
         
-        # Display Results
-        st.success("Перевод завершен!")
-        
-        # Audio Player
-        with open(output_path, "rb") as audio_file:
-            audio_bytes = audio_file.read()
-            st.audio(audio_bytes, format="audio/mp3")
-            
-        # Download Button
-        st.download_button(
-            label="Скачать MP3",
-            data=audio_bytes,
-            file_name=f"translated_audio_{video_id}.mp3",
-            mime="audio/mp3"
+        process_video(
+            video_id=video_id,
+            target_language=target_language,
+            output_format=output_format,
+            voice=voice,
+            keep_original_audio=keep_original_audio,
+            original_volume=original_volume
         )
-        
-        # Cleanup
-        os.unlink(output_path)
-        
+
+
+def process_video(
+    video_id: str,
+    target_language: str,
+    output_format: str,
+    voice: str = "alloy",
+    keep_original_audio: bool = False,
+    original_volume: float = 0.1
+):
+    """
+    Process a YouTube video: extract transcript, translate, generate TTS, and optionally merge with video.
+    """
+    try:
+        with temp_directory() as temp_dir:
+            with st.status("Обработка видео...", expanded=True) as status:
+                
+                # 1. Get Transcript
+                st.write("📝 Получение субтитров...")
+                transcript = get_transcript(video_id)
+                if not transcript:
+                    st.error("Для этого видео субтитры недоступны.")
+                    status.update(label="Ошибка!", state="error")
+                    return
+                
+                # 2. Format Transcript
+                st.write("📋 Подготовка текста...")
+                chunks = format_transcript_for_translation(transcript)
+                
+                # 3. Translate
+                lang_name = 'русский' if target_language == 'ru' else 'украинский'
+                st.write(f"🌐 Перевод на {lang_name} язык...")
+                translated_chunks = translate_transcript_chunks(chunks, target_language)
+                
+                # 4. Download video if needed
+                video_path = None
+                original_audio_path = None
+                
+                if output_format == "video":
+                    st.write("📥 Скачивание видео...")
+                    video_path, original_audio_path = download_video(video_id, temp_dir)
+                    
+                    if not video_path:
+                        st.error("Не удалось скачать видео. Попробуйте только аудио.")
+                        status.update(label="Ошибка!", state="error")
+                        return
+                
+                # 5. TTS
+                st.write("🔊 Генерация озвучки (OpenAI TTS)...")
+                audio_path = os.path.join(temp_dir, f"translated_{video_id}.mp3")
+                
+                if output_format == "video" and video_path:
+                    video_duration_ms = int((get_video_duration(video_path) or 0) * 1000)
+                    create_audio_for_video(translated_chunks, video_duration_ms, audio_path, voice)
+                else:
+                    create_full_audio(translated_chunks, audio_path, voice)
+                
+                if not os.path.exists(audio_path):
+                    st.error("Не удалось сгенерировать аудио.")
+                    status.update(label="Ошибка!", state="error")
+                    return
+                
+                # 6. Merge video if needed
+                if output_format == "video" and video_path:
+                    st.write("🎬 Наложение озвучки на видео...")
+                    output_video_path = os.path.join(temp_dir, f"output_{video_id}.mp4")
+                    
+                    result = merge_audio_video(
+                        video_path=video_path,
+                        translated_audio_path=audio_path,
+                        output_path=output_video_path,
+                        original_audio_path=original_audio_path if keep_original_audio else None,
+                        original_audio_volume=original_volume
+                    )
+                    
+                    if not result:
+                        st.error("Не удалось наложить аудио на видео.")
+                        status.update(label="Ошибка!", state="error")
+                        return
+                    
+                    output_path = output_video_path
+                    output_mime = "video/mp4"
+                    output_ext = "mp4"
+                else:
+                    output_path = audio_path
+                    output_mime = "audio/mp3"
+                    output_ext = "mp3"
+                
+                status.update(label="Готово!", state="complete", expanded=False)
+            
+            # Display Results
+            st.success("Перевод завершен!")
+            
+            # Read file for display and download
+            with open(output_path, "rb") as f:
+                output_bytes = f.read()
+            
+            # Media Player
+            if output_format == "video":
+                st.video(output_bytes, format="video/mp4")
+            else:
+                st.audio(output_bytes, format="audio/mp3")
+            
+            # Download Button
+            st.download_button(
+                label=f"Скачать {output_ext.upper()}",
+                data=output_bytes,
+                file_name=f"translated_{video_id}.{output_ext}",
+                mime=output_mime
+            )
+            
+            # Show translated text
+            with st.expander("Показать переведенный текст"):
+                for i, chunk in enumerate(translated_chunks):
+                    st.markdown(f"**[{chunk['start']:.1f}s - {chunk.get('end', 0):.1f}s]**")
+                    st.text(chunk['text'])
+                    st.divider()
+                    
     except Exception as e:
+        logger.exception("Error processing video")
         st.error(f"Произошла ошибка: {str(e)}")
+
 
 if __name__ == "__main__":
     main()
