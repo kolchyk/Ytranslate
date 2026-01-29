@@ -4,6 +4,7 @@ Translation module using OpenAI GPT API.
 import os
 import logging
 from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -77,11 +78,13 @@ def translate_transcript_chunks(
     Returns:
         List of translated chunks with timing info
     """
-    translated_chunks = []
-    
-    for i, chunk in enumerate(chunks):
+    if not chunks:
+        return []
+
+    # Helper function for parallel execution
+    def process_chunk(i, chunk):
         if not chunk:
-            continue
+            return None
             
         # Combine all text in the chunk for translation
         combined_text = "\n".join([segment['text'] for segment in chunk])
@@ -104,15 +107,28 @@ def translate_transcript_chunks(
             estimated_duration = len(last_segment['text']) / 5 / 150 * 60
             end_time = start_time + max(estimated_duration, 2.0)
         
-        translated_chunks.append({
+        logger.debug(f"Translated chunk {i}: {start_time:.1f}s - {end_time:.1f}s")
+        
+        return {
+            'index': i,
             'start': start_time,
             'end': end_time,
             'text': translated_text,
             'original_text': combined_text
-        })
-        
-        logger.debug(f"Translated chunk {i}: {start_time:.1f}s - {end_time:.1f}s")
+        }
+
+    # Execute in parallel
+    with ThreadPoolExecutor(max_workers=min(len(chunks), 10)) as executor:
+        results = list(executor.map(lambda p: process_chunk(*p), enumerate(chunks)))
     
+    # Filter out None results and sort by original index to preserve order
+    translated_chunks = [r for r in results if r is not None]
+    translated_chunks.sort(key=lambda x: x['index'])
+    
+    # Remove index key before returning
+    for chunk in translated_chunks:
+        del chunk['index']
+        
     return translated_chunks
 
 

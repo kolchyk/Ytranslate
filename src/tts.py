@@ -8,6 +8,7 @@ import sys
 import logging
 import warnings
 from typing import Optional, List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -298,10 +299,8 @@ def create_full_audio(
         logger.error("No chunks provided for audio generation")
         return None
     
-    full_audio = AudioSegment.silent(duration=0)
-    current_time_ms = 0
-    
-    for i, chunk in enumerate(translated_chunks):
+    # Helper function for parallel execution
+    def process_chunk_audio(i, chunk):
         start_time_ms = int(chunk['start'] * 1000)
         
         # Calculate available duration for this chunk
@@ -309,13 +308,29 @@ def create_full_audio(
             end_time_ms = int(chunk['end'] * 1000)
             available_duration_ms = end_time_ms - start_time_ms
         elif i + 1 < len(translated_chunks):
-            # Use next chunk's start time as end
             next_start_ms = int(translated_chunks[i + 1]['start'] * 1000)
             available_duration_ms = next_start_ms - start_time_ms
         else:
-            # Last chunk - no duration constraint
             available_duration_ms = 0
+            
+        chunk_audio = generate_audio(chunk['text'], voice=voice)
         
+        if chunk_audio and sync_to_timing and available_duration_ms > 0:
+            chunk_audio = adjust_audio_duration(chunk_audio, available_duration_ms)
+            
+        return i, start_time_ms, chunk_audio
+
+    # Execute in parallel
+    with ThreadPoolExecutor(max_workers=min(len(translated_chunks), 10)) as executor:
+        results = list(executor.map(lambda p: process_chunk_audio(*p), enumerate(translated_chunks)))
+    
+    # Sort results by index to preserve order
+    results.sort(key=lambda x: x[0])
+    
+    full_audio = AudioSegment.silent(duration=0)
+    current_time_ms = 0
+    
+    for i, start_time_ms, chunk_audio in results:
         # Add silence if there's a gap before this chunk
         if start_time_ms > current_time_ms:
             silence_duration = start_time_ms - current_time_ms
@@ -323,14 +338,7 @@ def create_full_audio(
             current_time_ms = start_time_ms
             logger.debug(f"Added {silence_duration}ms silence before chunk {i}")
         
-        # Generate audio for this chunk
-        chunk_audio = generate_audio(chunk['text'], voice=voice)
-        
         if chunk_audio:
-            # Adjust audio duration if sync is enabled and we have a target duration
-            if sync_to_timing and available_duration_ms > 0:
-                chunk_audio = adjust_audio_duration(chunk_audio, available_duration_ms)
-            
             full_audio += chunk_audio
             current_time_ms += len(chunk_audio)
             logger.debug(f"Chunk {i}: {len(chunk_audio)}ms at position {start_time_ms}ms")

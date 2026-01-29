@@ -15,6 +15,7 @@ import tempfile
 import logging
 from contextlib import contextmanager
 from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
 from src.youtube import extract_video_id, get_transcript, format_transcript_for_translation
 from src.translator import translate_transcript_chunks
@@ -180,23 +181,31 @@ def process_video(
                 st.write("📋 Подготовка текста...")
                 chunks = format_transcript_for_translation(transcript)
                 
-                # 3. Translate
+                # 3 & 4. Translate and Download in parallel
                 lang_name = 'русский' if target_language == 'ru' else 'украинский'
-                st.write(f"🌐 Перевод на {lang_name} язык...")
-                translated_chunks = translate_transcript_chunks(chunks, target_language)
+                st.write(f"🌐 Перевод на {lang_name} и подготовка медиа...")
                 
-                # 4. Download video if needed
-                video_path = None
-                original_audio_path = None
-                
-                if output_format == "video":
-                    st.write("📥 Скачивание видео...")
-                    video_path, original_audio_path = download_video(video_id, temp_dir)
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    # Start translation
+                    translation_future = executor.submit(translate_transcript_chunks, chunks, target_language)
                     
-                    if not video_path:
-                        st.error("Не удалось скачать видео. Попробуйте только аудио.")
-                        status.update(label="Ошибка!", state="error")
-                        return
+                    # Start download if needed
+                    download_future = None
+                    if output_format == "video":
+                        download_future = executor.submit(download_video, video_id, temp_dir)
+                    
+                    # Wait for results
+                    translated_chunks = translation_future.result()
+                    
+                    video_path = None
+                    original_audio_path = None
+                    if download_future:
+                        video_path, original_audio_path = download_future.result()
+                
+                if output_format == "video" and not video_path:
+                    st.error("Не удалось скачать видео. Попробуйте только аудио.")
+                    status.update(label="Ошибка!", state="error")
+                    return
                 
                 # 5. TTS
                 st.write("🔊 Генерация озвучки (OpenAI TTS)...")

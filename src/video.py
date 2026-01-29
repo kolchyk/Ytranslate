@@ -136,7 +136,7 @@ def download_video(video_id: str, output_dir: Optional[str] = None) -> Tuple[Opt
         'merge_output_format': 'mp4',
         'noplaylist': True,
         'ffmpeg_location': FFMPEG_PATH,
-        'js_runtimes': ['node'],
+        'js_runtimes': {'node': {}},
         **config
     }
     
