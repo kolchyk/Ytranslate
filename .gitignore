@@ -29,3 +29,5 @@ uv.lock
 # Temporary files
 *.tmp
 *.log
+
+# Cookies (contains sensitive authentication data)
