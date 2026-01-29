@@ -21,17 +21,18 @@ def get_transcript(video_id, languages=['en', 'ru', 'uk']):
     Returns a list of transcript segments or None if not found.
     """
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
         
         # Try to find a transcript in requested languages
         try:
             transcript = transcript_list.find_transcript(languages)
-            return transcript.fetch()
+            return transcript.fetch().to_raw_data()
         except NoTranscriptFound:
             # Fallback: just get any available transcript (e.g. auto-generated)
             # and let the translation service handle it if it's not in the desired language
             transcript = transcript_list.find_generated_transcript(['en'])
-            return transcript.fetch()
+            return transcript.fetch().to_raw_data()
             
     except (TranscriptsDisabled, NoTranscriptFound, Exception) as e:
         print(f"Error fetching transcript: {e}")
