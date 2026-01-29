@@ -79,8 +79,8 @@ def find_binary(name: str) -> Optional[str]:
 _ffmpeg_path = find_binary("ffmpeg")
 _ffprobe_path = find_binary("ffprobe")
 
-FFMPEG_PATH = os.path.abspath(_ffmpeg_path) if _ffmpeg_path else None
-FFPROBE_PATH = os.path.abspath(_ffprobe_path) if _ffprobe_path else None
+FFMPEG_PATH = os.path.normpath(os.path.abspath(_ffmpeg_path)) if _ffmpeg_path else None
+FFPROBE_PATH = os.path.normpath(os.path.abspath(_ffprobe_path)) if _ffprobe_path else None
 
 # Suppress RuntimeWarning from pydub about ffmpeg (we handle detection ourselves)
 warnings.filterwarnings("ignore", message=".*Couldn't find ffmpeg.*", category=RuntimeWarning, module="pydub")
@@ -129,12 +129,22 @@ from pydub import AudioSegment  # type: ignore
 if FFMPEG_PATH:
     AudioSegment.converter = FFMPEG_PATH
     logger.info(f"Using ffmpeg at: {FFMPEG_PATH}")
+    # Add ffmpeg directory to PATH so subprocess can find it
+    ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
+    current_path = os.environ.get("PATH", "")
+    if ffmpeg_dir not in current_path:
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + current_path
 else:
     logger.warning("ffmpeg not found. Audio processing may fail.")
     
 if FFPROBE_PATH:
     AudioSegment.ffprobe = FFPROBE_PATH
     logger.info(f"Using ffprobe at: {FFPROBE_PATH}")
+    # Add ffprobe directory to PATH so subprocess can find it
+    ffprobe_dir = os.path.dirname(FFPROBE_PATH)
+    current_path = os.environ.get("PATH", "")
+    if ffprobe_dir not in current_path:
+        os.environ["PATH"] = ffprobe_dir + os.pathsep + current_path
 else:
     logger.warning("ffprobe not found. Audio processing may fail.")
     
@@ -215,9 +225,6 @@ def generate_audio(
             logger.error(error_msg)
         else:
             logger.error(f"Error during TTS generation: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Error during TTS generation: {e}")
         return None
 
 
