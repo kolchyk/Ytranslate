@@ -39,7 +39,9 @@ if not FFPROBE_PATH:
 
 
 def get_youtube_config():
-    """Returns YouTube-related configuration for yt-dlp."""
+    """Returns YouTube-related configuration for yt-dlp.
+    Supports multiple proxies (comma-separated) - uses first available.
+    """
     config = {}
     
     # Cookies
@@ -48,11 +50,17 @@ def get_youtube_config():
         config["cookiefile"] = cookies_file
         logger.info(f"Using YouTube cookies for yt-dlp from: {cookies_file}")
     
-    # Proxy
-    proxy = os.getenv("YOUTUBE_PROXY")
-    if proxy:
-        config["proxy"] = proxy
-        logger.info("Using YouTube proxy for yt-dlp")
+    # Proxy - yt-dlp uses single proxy, so take first from list
+    proxy_env = os.getenv("YOUTUBE_PROXY")
+    if proxy_env:
+        # Split by comma and take first proxy
+        proxies = [p.strip() for p in proxy_env.split(",") if p.strip()]
+        if proxies:
+            config["proxy"] = proxies[0]
+            if len(proxies) > 1:
+                logger.info(f"Using first proxy from {len(proxies)} configured proxies for yt-dlp")
+            else:
+                logger.info("Using YouTube proxy for yt-dlp")
         
     return config
 

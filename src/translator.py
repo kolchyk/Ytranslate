@@ -47,7 +47,7 @@ def translate_text(text: str, target_language: str = "ru") -> str:
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4.1-mini-2025-04-14",
             messages=[
                 {
                     "role": "system",

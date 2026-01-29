@@ -82,14 +82,25 @@ def main():
     with st.expander("Расширенные настройки"):
         # YouTube configuration check
         cookies_file = os.getenv("YOUTUBE_COOKIES_PATH", "cookies.txt")
-        proxy = os.getenv("YOUTUBE_PROXY")
+        proxy_env = os.getenv("YOUTUBE_PROXY")
         
         if os.path.exists(cookies_file):
             st.info(f"✅ Файл cookies найден: `{cookies_file}`")
-        elif proxy:
-            st.info("✅ Прокси настроен")
+        elif proxy_env:
+            proxies = [p.strip() for p in proxy_env.split(",") if p.strip()]
+            if len(proxies) > 1:
+                st.info(f"✅ Настроено {len(proxies)} прокси для ротации")
+            else:
+                st.info("✅ Прокси настроен")
         else:
-            st.warning("⚠️ Файл `cookies.txt` не найден. Если YouTube блокирует запросы, добавьте его в корень проекта.")
+            st.warning(
+                "⚠️ **YouTube может блокировать запросы с облачных провайдеров (Heroku, AWS и т.д.)**\n\n"
+                "Для решения проблемы:\n"
+                "1. **Добавьте файл `cookies.txt`** в корень проекта (рекомендуется)\n"
+                "2. **Или установите переменную окружения `YOUTUBE_PROXY`** с адресом прокси-сервера\n"
+                "   Пример: `http://user:password@host:port`\n"
+                "   Можно указать несколько через запятую для автоматической ротации"
+            )
 
         voice = st.selectbox(
             "Голос озвучки:",

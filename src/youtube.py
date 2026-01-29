@@ -5,10 +5,12 @@ import re
 import logging
 import os
 import requests
+import random
 from http.cookiejar import MozillaCookieJar
 from typing import Optional, List, Dict, Any
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from youtube_transcript_api.proxies import GenericProxyConfig
+from youtube_transcript_api._errors import RequestBlocked
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,7 @@ logger = logging.getLogger(__name__)
 def get_youtube_config() -> Dict[str, Any]:
     """
     Returns YouTube-related configuration (cookies, proxies).
+    Supports multiple proxies (comma-separated) for rotation.
     """
     config = {}
     
@@ -24,12 +27,25 @@ def get_youtube_config() -> Dict[str, Any]:
     if os.path.exists(cookies_file):
         config["cookies"] = cookies_file
         logger.info(f"Using YouTube cookies from: {cookies_file}")
+    else:
+        logger.debug(f"Cookies file not found at: {cookies_file}")
     
-    # Proxies
-    proxy = os.getenv("YOUTUBE_PROXY")
-    if proxy:
-        config["proxy"] = proxy  # Store the single URL
-        logger.info("Using YouTube proxy")
+    # Proxies - support multiple proxies (comma-separated)
+    proxy_env = os.getenv("YOUTUBE_PROXY")
+    if proxy_env:
+        # Split by comma and strip whitespace
+        proxies = [p.strip() for p in proxy_env.split(",") if p.strip()]
+        if proxies:
+            config["proxies"] = proxies
+            logger.info(f"Configured {len(proxies)} YouTube proxy/proxies")
+        else:
+            logger.warning("YOUTUBE_PROXY is set but empty")
+    else:
+        logger.warning(
+            "YOUTUBE_PROXY not set. YouTube may block requests from cloud providers. "
+            "Set YOUTUBE_PROXY environment variable (e.g., http://user:pass@host:port) "
+            "or use cookies.txt file."
+        )
         
     return config
 
@@ -61,6 +77,7 @@ def get_transcript(
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Fetches the transcript for a given video ID.
+    Supports proxy rotation and retries with different proxies if one fails.
     
     Args:
         video_id: YouTube video ID
@@ -74,78 +91,118 @@ def get_transcript(
     
     config = get_youtube_config()
     cookies_file = config.get("cookies")
-    proxy_url = config.get("proxy")
+    proxy_list = config.get("proxies", [])
     
-    try:
-        # Configure the API instance
-        proxy_config = None
-        if proxy_url:
-            proxy_config = GenericProxyConfig(http_url=proxy_url, https_url=proxy_url)
-            
-        http_client = None
-        if cookies_file:
-            try:
-                session = requests.Session()
-                cookie_jar = MozillaCookieJar(cookies_file)
-                cookie_jar.load(ignore_discard=True, ignore_expires=True)
-                session.cookies = cookie_jar
-                http_client = session
-            except Exception as ce:
-                logger.error(f"Error loading cookies: {ce}")
-        
-        # Instantiate the API with config
-        api = YouTubeTranscriptApi(
-            proxy_config=proxy_config,
-            http_client=http_client
-        )
-        
-        # Get the transcript list
-        transcript_list = api.list(video_id)
-        
-        # Try to find a transcript in requested languages
+    # If no proxies configured, try without proxy first
+    proxies_to_try = proxy_list if proxy_list else [None]
+    
+    last_error = None
+    
+    for attempt, proxy_url in enumerate(proxies_to_try):
         try:
-            transcript = transcript_list.find_transcript(languages)
-            data = transcript.fetch() # Returns a list of dicts directly in newer versions, or needs to_raw_data()
-            
-            # In newer versions, fetch() might return a list of dicts or a Transcript object.
-            # Based on the repo, it returns a list of dictionaries.
-            if hasattr(data, 'to_raw_data'):
-                data = data.to_raw_data()
+            # Configure the API instance
+            proxy_config = None
+            if proxy_url:
+                proxy_config = GenericProxyConfig(http_url=proxy_url, https_url=proxy_url)
+                logger.info(f"Attempt {attempt + 1}/{len(proxies_to_try)}: Using proxy {proxy_url[:50]}...")
+            elif len(proxies_to_try) > 1:
+                logger.info(f"Attempt {attempt + 1}/{len(proxies_to_try)}: Trying without proxy")
+            else:
+                logger.info("Attempting to fetch transcript (no proxy configured)")
                 
-            logger.info(f"Found transcript in language: {transcript.language_code}")
-            return data
-        except NoTranscriptFound:
-            # Fallback: get any available transcript (e.g. auto-generated)
-            # Try English as a fallback
+            http_client = None
+            if cookies_file:
+                try:
+                    session = requests.Session()
+                    cookie_jar = MozillaCookieJar(cookies_file)
+                    cookie_jar.load(ignore_discard=True, ignore_expires=True)
+                    session.cookies = cookie_jar
+                    http_client = session
+                    logger.debug("Using cookies for authentication")
+                except Exception as ce:
+                    logger.error(f"Error loading cookies: {ce}")
+            
+            # Instantiate the API with config
+            api = YouTubeTranscriptApi(
+                proxy_config=proxy_config,
+                http_client=http_client
+            )
+            
+            # Get the transcript list
+            transcript_list = api.list(video_id)
+            
+            # Try to find a transcript in requested languages
             try:
-                transcript = transcript_list.find_generated_transcript(['en'])
-                data = transcript.fetch()
+                transcript = transcript_list.find_transcript(languages)
+                data = transcript.fetch() # Returns a list of dicts directly in newer versions, or needs to_raw_data()
+                
+                # In newer versions, fetch() might return a list of dicts or a Transcript object.
+                # Based on the repo, it returns a list of dictionaries.
                 if hasattr(data, 'to_raw_data'):
                     data = data.to_raw_data()
-                logger.info("Using auto-generated English transcript")
+                    
+                logger.info(f"Successfully fetched transcript in language: {transcript.language_code}")
                 return data
-            except Exception as e:
-                logger.error(f"No auto-generated English transcript: {e}")
-                # Last resort: just get the first one
-                for transcript in transcript_list:
+            except NoTranscriptFound:
+                # Fallback: get any available transcript (e.g. auto-generated)
+                # Try English as a fallback
+                try:
+                    transcript = transcript_list.find_generated_transcript(['en'])
                     data = transcript.fetch()
                     if hasattr(data, 'to_raw_data'):
                         data = data.to_raw_data()
-                    logger.info(f"Using first available transcript: {transcript.language_code}")
+                    logger.info("Using auto-generated English transcript")
                     return data
-                return None
-            
-    except TranscriptsDisabled:
-        logger.error(f"Transcripts are disabled for video: {video_id}")
-        return None
-    except NoTranscriptFound:
-        logger.error(f"No transcript found for video: {video_id}")
-        return None
-    except Exception as e:
-        logger.error(f"Error fetching transcript: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+                except Exception as e:
+                    logger.error(f"No auto-generated English transcript: {e}")
+                    # Last resort: just get the first one
+                    for transcript in transcript_list:
+                        data = transcript.fetch()
+                        if hasattr(data, 'to_raw_data'):
+                            data = data.to_raw_data()
+                        logger.info(f"Using first available transcript: {transcript.language_code}")
+                        return data
+                    return None
+                
+        except RequestBlocked as e:
+            last_error = e
+            logger.warning(f"Request blocked with proxy {proxy_url if proxy_url else 'none'}: {e}")
+            # If we have more proxies to try, continue
+            if attempt < len(proxies_to_try) - 1:
+                logger.info(f"Retrying with next proxy...")
+                continue
+            else:
+                # Last attempt failed, log detailed error
+                logger.error(
+                    "All proxy attempts failed. YouTube is blocking requests. "
+                    "Solutions:\n"
+                    "1. Set YOUTUBE_PROXY environment variable with a working proxy (e.g., http://user:pass@host:port)\n"
+                    "2. Add cookies.txt file for authentication\n"
+                    "3. Use multiple proxies: YOUTUBE_PROXY='proxy1,proxy2,proxy3'"
+                )
+                raise
+        except TranscriptsDisabled:
+            logger.error(f"Transcripts are disabled for video: {video_id}")
+            return None
+        except NoTranscriptFound:
+            logger.error(f"No transcript found for video: {video_id}")
+            return None
+        except Exception as e:
+            last_error = e
+            logger.error(f"Error fetching transcript (attempt {attempt + 1}): {e}")
+            # If this is a blocking error and we have more proxies, try next one
+            if isinstance(e, RequestBlocked) and attempt < len(proxies_to_try) - 1:
+                continue
+            # Otherwise, log and return None
+            import traceback
+            logger.error(traceback.format_exc())
+            if attempt < len(proxies_to_try) - 1:
+                continue
+    
+    # All attempts failed
+    if last_error:
+        logger.error(f"Failed to fetch transcript after {len(proxies_to_try)} attempt(s)")
+    return None
 
 
 def format_transcript_for_translation(

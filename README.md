@@ -63,7 +63,78 @@ If you are running this application on a cloud provider (like Heroku, AWS, etc.)
 
 #### Using Proxies
 
-Set the `YOUTUBE_PROXY` environment variable to your proxy URL (e.g., `http://user:password@host:port`).
+Set the `YOUTUBE_PROXY` environment variable to your proxy URL. The application supports multiple proxies (comma-separated) and will automatically rotate through them if one fails.
+
+**Single proxy:**
+```bash
+export YOUTUBE_PROXY="http://user:password@host:port"
+```
+
+**Multiple proxies (for rotation):**
+```bash
+export YOUTUBE_PROXY="http://proxy1:port,http://proxy2:port,http://proxy3:port"
+```
+
+**For Heroku deployment:**
+
+1. Set the proxy via Heroku CLI:
+   ```bash
+   heroku config:set YOUTUBE_PROXY="http://user:password@host:port"
+   ```
+
+2. Or set it in the Heroku Dashboard:
+   - Go to your app → Settings → Config Vars
+   - Add `YOUTUBE_PROXY` with your proxy URL
+
+3. **Important**: Make sure your proxy supports HTTPS connections to YouTube. SOCKS5 proxies are also supported (format: `socks5://user:pass@host:port`).
+
+**Proxy format examples:**
+- HTTP proxy: `http://username:password@proxy.example.com:8080`
+- HTTPS proxy: `https://username:password@proxy.example.com:8080`
+- SOCKS5 proxy: `socks5://username:password@proxy.example.com:1080`
+- No authentication: `http://proxy.example.com:8080`
+
+**Where to get proxy servers:**
+
+1. **Free proxy lists** (not recommended for production):
+   - [FreeProxyList](https://free-proxy-list.net/)
+   - [ProxyScrape](https://proxyscrape.com/)
+   - ⚠️ Free proxies are often slow, unreliable, and may be blocked by YouTube
+
+2. **Paid proxy services** (recommended):
+   - **Residential proxies**: 
+     - [Bright Data](https://brightdata.com/) (formerly Luminati)
+     - [Smartproxy](https://smartproxy.com/)
+     - [Oxylabs](https://oxylabs.io/)
+   - **Datacenter proxies**:
+     - [ProxyMesh](https://proxymesh.com/)
+     - [ProxyRack](https://www.proxyrack.com/)
+   - **SOCKS5 proxies**:
+     - [SOCKS5 Proxies](https://socks5proxies.net/)
+
+3. **Self-hosted proxy** (advanced):
+   - Set up your own proxy server using Squid, Shadowsocks, or similar
+   - Use a VPS with a non-cloud IP address
+
+**Important notes:**
+- YouTube often blocks datacenter IPs (AWS, Google Cloud, Azure, etc.)
+- Residential proxies work best but are more expensive
+- Free proxies are unreliable and may expose your data
+- For Heroku, consider using cookies instead (see below) - it's simpler and often more reliable
+
+**Alternative: Using Cookies (Easier and Free)**
+
+Instead of proxies, you can use YouTube cookies which is often simpler:
+
+1. Install browser extension "Get cookies.txt LOCALLY" (Chrome/Firefox)
+2. Log in to YouTube in your browser
+3. Export cookies as `cookies.txt` using the extension
+4. Upload `cookies.txt` to your Heroku app root directory
+5. The app will automatically use cookies for authentication
+
+This method is free and often more reliable than free proxies, though cookies expire and need to be refreshed periodically.
+
+**Note**: If you don't set a proxy and YouTube blocks your requests, you'll see error messages in the logs. The application will automatically retry with different proxies if multiple are configured.
 
 ### Common uv Commands
 
