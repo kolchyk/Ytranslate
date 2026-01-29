@@ -1,6 +1,22 @@
 import os
 import io
 import shutil
+import sys
+
+# Python 3.13+ compatibility for audioop (required by pydub)
+try:
+    import audioop
+except ImportError:
+    try:
+        import audioop_lts as audioop
+        sys.modules['audioop'] = audioop
+    except ImportError:
+        try:
+            import pyaudioop as audioop
+            sys.modules['audioop'] = audioop
+        except ImportError:
+            pass
+
 from openai import OpenAI
 from pydub import AudioSegment
 from dotenv import load_dotenv

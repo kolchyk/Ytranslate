@@ -1,7 +1,9 @@
 streamlit>=1.53.1
-youtube-transcript-api>=0.6.3
+youtube-transcript-api==1.2.4
 openai>=2.16.0
 pydub>=0.25.1
 python-dotenv>=1.0.1
 requests>=2.32.3
 gunicorn>=23.0.0
+audioop-lts
+pyaudioop
