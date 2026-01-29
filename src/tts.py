@@ -1,5 +1,5 @@
 """
-Text-to-Speech module using OpenAI TTS API with timing synchronization.
+Text-to-Speech module using OpenAI TTS API with timing synchronization using ffmpeg.
 """
 import os
 import io
@@ -7,35 +7,21 @@ import shutil
 import sys
 import logging
 import warnings
+import subprocess
+import tempfile
 from typing import Optional, List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
+from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Suppress pydub warnings about invalid escape sequences (from third-party library)
-warnings.filterwarnings("ignore", category=SyntaxWarning, module="pydub")
-
-# Python 3.13+ compatibility for audioop (required by pydub)
-try:
-    import audioop  # type: ignore
-except ImportError:
-    try:
-        import audioop_lts as audioop  # type: ignore
-        sys.modules['audioop'] = audioop
-    except ImportError:
-        try:
-            import pyaudioop as audioop  # type: ignore
-            sys.modules['audioop'] = audioop
-        except ImportError:
-            pass
-
-from dotenv import load_dotenv  # type: ignore
-load_dotenv()
-
-# Check for ffmpeg and ffprobe BEFORE importing pydub
+# Check for ffmpeg and ffprobe
 def find_binary(name: str) -> Optional[str]:
     """Finds a binary in the system PATH or common installation locations."""
-    # Check Heroku apt locations FIRST (before PATH check, as it may not be in PATH yet)
+    # Check Heroku apt locations FIRST
     heroku_apt_path = os.path.join(os.getcwd(), ".apt", "usr", "bin", name)
     if os.path.exists(heroku_apt_path):
         return heroku_apt_path
@@ -52,23 +38,16 @@ def find_binary(name: str) -> Optional[str]:
     
     # Check common Windows installation paths
     if sys.platform == "win32":
-        # Get user's home directory
         user_home = os.path.expanduser("~")
         windows_paths = [
-            # Standard installation paths
             os.path.join("C:\\", "ffmpeg", "bin", f"{name}.exe"),
             os.path.join("C:\\", "Program Files", "ffmpeg", "bin", f"{name}.exe"),
             os.path.join("C:\\", "Program Files (x86)", "ffmpeg", "bin", f"{name}.exe"),
-            # User installation paths
             os.path.join(user_home, "ffmpeg", "bin", f"{name}.exe"),
             os.path.join(user_home, "AppData", "Local", "ffmpeg", "bin", f"{name}.exe"),
-            # Chocolatey installation path
             os.path.join("C:\\", "ProgramData", "chocolatey", "bin", f"{name}.exe"),
-            # Scoop installation path
             os.path.join(user_home, "scoop", "apps", "ffmpeg", "current", "bin", f"{name}.exe"),
-            # Portable installation in project directory
             os.path.join(os.getcwd(), "ffmpeg", "bin", f"{name}.exe"),
-            os.path.join(os.path.dirname(os.getcwd()), "ffmpeg", "bin", f"{name}.exe"),
         ]
         for win_path in windows_paths:
             if os.path.exists(win_path):
@@ -83,9 +62,18 @@ _ffprobe_path = find_binary("ffprobe")
 FFMPEG_PATH = os.path.normpath(os.path.abspath(_ffmpeg_path)) if _ffmpeg_path else None
 FFPROBE_PATH = os.path.normpath(os.path.abspath(_ffprobe_path)) if _ffprobe_path else None
 
-# Suppress RuntimeWarning from pydub about ffmpeg (we handle detection ourselves)
-warnings.filterwarnings("ignore", message=".*Couldn't find ffmpeg.*", category=RuntimeWarning, module="pydub")
-warnings.filterwarnings("ignore", message=".*ffmpeg.*", category=RuntimeWarning, module="pydub")
+# Set environment variables for subprocesses
+if FFMPEG_PATH:
+    os.environ["FFMPEG_BINARY"] = FFMPEG_PATH
+    ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
+    if ffmpeg_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+
+if FFPROBE_PATH:
+    os.environ["FFPROBE_BINARY"] = FFPROBE_PATH
+    ffprobe_dir = os.path.dirname(FFPROBE_PATH)
+    if ffprobe_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = ffprobe_dir + os.pathsep + os.environ.get("PATH", "")
 
 
 def is_ffmpeg_available() -> bool:
@@ -122,62 +110,40 @@ def get_ffmpeg_installation_instructions() -> str:
             "- Или скачайте с https://ffmpeg.org/download.html"
         )
 
-# Now import pydub after configuring paths
-from openai import OpenAI  # type: ignore
-from pydub import AudioSegment  # type: ignore
-
-# Configure pydub to use found ffmpeg/ffprobe paths
-if FFMPEG_PATH:
-    AudioSegment.converter = FFMPEG_PATH
-    logger.info(f"Using ffmpeg at: {FFMPEG_PATH}")
-    # Add ffmpeg directory to PATH so subprocess can find it
-    ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
-    current_path = os.environ.get("PATH", "")
-    if ffmpeg_dir not in current_path:
-        os.environ["PATH"] = ffmpeg_dir + os.pathsep + current_path
-else:
-    logger.warning("ffmpeg not found. Audio processing may fail.")
-    
-if FFPROBE_PATH:
-    AudioSegment.ffprobe = FFPROBE_PATH
-    logger.info(f"Using ffprobe at: {FFPROBE_PATH}")
-    # Add ffprobe directory to PATH so subprocess can find it
-    ffprobe_dir = os.path.dirname(FFPROBE_PATH)
-    current_path = os.environ.get("PATH", "")
-    if ffprobe_dir not in current_path:
-        os.environ["PATH"] = ffprobe_dir + os.pathsep + current_path
-else:
-    logger.warning("ffprobe not found. Audio processing may fail.")
-    
-# Also set environment variable as fallback (some pydub operations use subprocess)
-if FFMPEG_PATH:
-    os.environ["FFMPEG_BINARY"] = FFMPEG_PATH
-if FFPROBE_PATH:
-    os.environ["FFPROBE_BINARY"] = FFPROBE_PATH
-
 
 def get_openai_client() -> OpenAI:
     """Get OpenAI client instance."""
     return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
+def get_audio_duration_ms(file_path: str) -> int:
+    """Gets audio duration in milliseconds using ffprobe."""
+    if not FFPROBE_PATH or not os.path.exists(file_path):
+        return 0
+    try:
+        cmd = [
+            FFPROBE_PATH, "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", file_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return int(float(result.stdout.strip()) * 1000)
+    except Exception as e:
+        logger.error(f"Error getting audio duration: {e}")
+        return 0
+
+
 def generate_audio(
     text: str,
     voice: str = "alloy",
     model: str = "gpt-4o-mini-tts",
-    speed: float = 1.0
-) -> Optional[AudioSegment]:
+    speed: float = 1.0,
+    output_dir: Optional[str] = None
+) -> Optional[str]:
     """
-    Generates audio from text using OpenAI TTS.
+    Generates audio from text using OpenAI TTS and saves to a temporary file.
     
-    Args:
-        text: Text to convert to speech
-        voice: Voice to use (alloy, echo, fable, onyx, nova, shimmer)
-        model: TTS model to use
-        speed: Speech speed (0.25 to 4.0)
-        
     Returns:
-        AudioSegment object or None on failure
+        Path to the generated MP3 file or None on failure
     """
     if not text or not text.strip():
         return None
@@ -191,90 +157,60 @@ def generate_audio(
             speed=speed
         )
         
-        # Read the response content into a byte stream
-        audio_data = io.BytesIO(response.content)
+        # Create a temporary file to store the audio
+        temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir=output_dir)
+        temp_file.write(response.content)
+        temp_file.close()
         
-        # Check if ffmpeg is available before trying to process audio
-        if not FFMPEG_PATH:
-            error_msg = (
-                "ffmpeg not found. Please install ffmpeg to process audio files.\n"
-                f"{get_ffmpeg_installation_instructions()}"
-            )
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        
-        # Ensure ffprobe is also available (pydub needs it for some operations)
-        if not FFPROBE_PATH:
-            logger.warning("ffprobe not found. Some audio operations may fail.")
-        
-        return AudioSegment.from_file(audio_data, format="mp3")
-    except FileNotFoundError as e:
-        error_msg = (
-            f"ffmpeg executable not found: {e}\n"
-            f"{get_ffmpeg_installation_instructions()}"
-        )
-        logger.error(error_msg)
-        return None
+        return temp_file.name
     except Exception as e:
-        # Check if error is related to ffmpeg/ffprobe
-        error_str = str(e).lower()
-        if "ffmpeg" in error_str or "ffprobe" in error_str or "couldn't find" in error_str:
-            error_msg = (
-                f"Audio processing failed - ffmpeg/ffprobe issue: {e}\n"
-                f"{get_ffmpeg_installation_instructions()}"
-            )
-            logger.error(error_msg)
-        else:
-            logger.error(f"Error during TTS generation: {e}")
+        logger.error(f"Error during TTS generation: {e}")
         return None
 
 
 def adjust_audio_duration(
-    audio: AudioSegment,
+    input_path: str,
     target_duration_ms: int,
-    min_speed: float = 0.75,
-    max_speed: float = 1.5
-) -> AudioSegment:
+    output_path: Optional[str] = None,
+    min_speed: float = 0.5,
+    max_speed: float = 2.0
+) -> Optional[str]:
     """
-    Adjusts audio duration to fit target duration using speed change.
-    
-    Args:
-        audio: AudioSegment to adjust
-        target_duration_ms: Target duration in milliseconds
-        min_speed: Minimum allowed speed factor
-        max_speed: Maximum allowed speed factor
-        
-    Returns:
-        Adjusted AudioSegment
+    Adjusts audio duration to fit target duration using ffmpeg's atempo filter.
     """
-    if target_duration_ms <= 0 or len(audio) == 0:
-        return audio
+    if not FFMPEG_PATH or not os.path.exists(input_path) or target_duration_ms <= 0:
+        return input_path
     
-    current_duration = len(audio)
+    current_duration_ms = get_audio_duration_ms(input_path)
+    if current_duration_ms == 0:
+        return input_path
     
-    # Calculate required speed change
-    speed_factor = current_duration / target_duration_ms
+    speed_factor = current_duration_ms / target_duration_ms
     
-    # Clamp speed factor to acceptable range
+    # ffmpeg's atempo filter supports 0.5 to 2.0. For larger values, we need to chain them.
+    # But for our purposes, clamping to 0.5-2.0 is usually enough.
     speed_factor = max(min_speed, min(max_speed, speed_factor))
     
     if abs(speed_factor - 1.0) < 0.05:
-        # Speed change too small, not worth processing
-        return audio
+        return input_path
     
-    try:
-        # Change speed using frame rate manipulation
-        # This changes speed without changing pitch significantly
-        new_frame_rate = int(audio.frame_rate * speed_factor)
-        adjusted = audio._spawn(audio.raw_data, overrides={
-            "frame_rate": new_frame_rate
-        }).set_frame_rate(audio.frame_rate)
+    if not output_path:
+        output_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        output_path = output_file.name
+        output_file.close()
         
-        logger.debug(f"Adjusted audio from {current_duration}ms to {len(adjusted)}ms (speed: {speed_factor:.2f}x)")
-        return adjusted
+    try:
+        # atempo filter changes speed without changing pitch
+        cmd = [
+            FFMPEG_PATH, "-i", input_path,
+            "-filter:a", f"atempo={speed_factor}",
+            "-y", output_path
+        ]
+        subprocess.run(cmd, capture_output=True, check=True)
+        return output_path
     except Exception as e:
-        logger.warning(f"Failed to adjust audio duration: {e}")
-        return audio
+        logger.error(f"Failed to adjust audio duration with ffmpeg: {e}")
+        return input_path
 
 
 def create_full_audio(
@@ -284,90 +220,86 @@ def create_full_audio(
     sync_to_timing: bool = True
 ) -> Optional[str]:
     """
-    Creates a full audio file from translated chunks with proper timing synchronization.
-    
-    Args:
-        translated_chunks: List of dicts with 'start', 'end' (optional), and 'text' keys
-        output_path: Path for the output audio file
-        voice: Voice to use for TTS
-        sync_to_timing: If True, adjust audio speed to fit original timing
-        
-    Returns:
-        Output path on success, None on failure
+    Creates a full audio file from translated chunks using ffmpeg concat.
     """
     if not translated_chunks:
         logger.error("No chunks provided for audio generation")
         return None
-    
-    # Helper function for parallel execution
-    def process_chunk_audio(i, chunk):
-        start_time_ms = int(chunk['start'] * 1000)
         
-        # Calculate available duration for this chunk
-        if 'end' in chunk:
-            end_time_ms = int(chunk['end'] * 1000)
-            available_duration_ms = end_time_ms - start_time_ms
-        elif i + 1 < len(translated_chunks):
-            next_start_ms = int(translated_chunks[i + 1]['start'] * 1000)
-            available_duration_ms = next_start_ms - start_time_ms
-        else:
-            available_duration_ms = 0
-            
-        chunk_audio = generate_audio(chunk['text'], voice=voice)
-        
-        if chunk_audio and sync_to_timing and available_duration_ms > 0:
-            chunk_audio = adjust_audio_duration(chunk_audio, available_duration_ms)
-            
-        return i, start_time_ms, chunk_audio
-
-    # Execute in parallel
-    with ThreadPoolExecutor(max_workers=min(len(translated_chunks), 10)) as executor:
-        results = list(executor.map(lambda p: process_chunk_audio(*p), enumerate(translated_chunks)))
-    
-    # Sort results by index to preserve order
-    results.sort(key=lambda x: x[0])
-    
-    full_audio = AudioSegment.silent(duration=0)
-    current_time_ms = 0
-    
-    for i, start_time_ms, chunk_audio in results:
-        # Add silence if there's a gap before this chunk
-        if start_time_ms > current_time_ms:
-            silence_duration = start_time_ms - current_time_ms
-            full_audio += AudioSegment.silent(duration=silence_duration)
-            current_time_ms = start_time_ms
-            logger.debug(f"Added {silence_duration}ms silence before chunk {i}")
-        
-        if chunk_audio:
-            full_audio += chunk_audio
-            current_time_ms += len(chunk_audio)
-            logger.debug(f"Chunk {i}: {len(chunk_audio)}ms at position {start_time_ms}ms")
-        else:
-            logger.warning(f"Failed to generate audio for chunk {i}")
+    temp_dir = tempfile.mkdtemp(prefix="tts_concat_")
     
     try:
-        if not FFMPEG_PATH:
-            error_msg = (
-                "ffmpeg not found. Cannot export audio file.\n"
-                "Please install ffmpeg:\n"
-                "Windows: Download from https://ffmpeg.org/download.html or use: choco install ffmpeg"
-            )
-            logger.error(error_msg)
-            return None
+        def process_chunk_audio(i, chunk):
+            start_time_ms = int(chunk['start'] * 1000)
+            
+            # Calculate available duration for this chunk
+            if 'end' in chunk:
+                end_time_ms = int(chunk['end'] * 1000)
+                available_duration_ms = end_time_ms - start_time_ms
+            elif i + 1 < len(translated_chunks):
+                next_start_ms = int(translated_chunks[i + 1]['start'] * 1000)
+                available_duration_ms = next_start_ms - start_time_ms
+            else:
+                available_duration_ms = 0
+                
+            chunk_file = generate_audio(chunk['text'], voice=voice, output_dir=temp_dir)
+            
+            if chunk_file and sync_to_timing and available_duration_ms > 0:
+                adjusted_file = os.path.join(temp_dir, f"adj_{i}.mp3")
+                result_file = adjust_audio_duration(chunk_file, available_duration_ms, adjusted_file)
+                chunk_file = result_file
+                
+            return i, start_time_ms, chunk_file
+
+        with ThreadPoolExecutor(max_workers=min(len(translated_chunks), 10)) as executor:
+            results = list(executor.map(lambda p: process_chunk_audio(*p), enumerate(translated_chunks)))
         
-        full_audio.export(output_path, format="mp3")
-        logger.info(f"Audio saved to: {output_path} (duration: {len(full_audio)}ms)")
+        results.sort(key=lambda x: x[0])
+        
+        # Build concat list for ffmpeg
+        concat_file_path = os.path.join(temp_dir, "concat_list.txt")
+        current_time_ms = 0
+        
+        with open(concat_file_path, "w", encoding="utf-8") as f:
+            for i, start_time_ms, chunk_file in results:
+                if not chunk_file:
+                    continue
+                
+                # Add silence if there's a gap
+                if start_time_ms > current_time_ms:
+                    silence_ms = start_time_ms - current_time_ms
+                    silence_file = os.path.join(temp_dir, f"silence_{i}.mp3")
+                    # Generate silence using ffmpeg
+                    silence_cmd = [
+                        FFMPEG_PATH, "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+                        "-t", f"{silence_ms/1000:.3f}", "-y", silence_file
+                    ]
+                    subprocess.run(silence_cmd, capture_output=True, check=True)
+                    f.write(f"file '{os.path.abspath(silence_file).replace('\\', '/')}'\n")
+                    current_time_ms = start_time_ms
+                
+                f.write(f"file '{os.path.abspath(chunk_file).replace('\\', '/')}'\n")
+                duration_ms = get_audio_duration_ms(chunk_file)
+                current_time_ms += duration_ms
+                
+        # Run ffmpeg concat
+        concat_cmd = [
+            FFMPEG_PATH, "-f", "concat", "-safe", "0", "-i", concat_file_path,
+            "-c", "libmp3lame", "-q:a", "2", "-y", output_path
+        ]
+        subprocess.run(concat_cmd, capture_output=True, check=True)
+        
         return output_path
-    except FileNotFoundError as e:
-        error_msg = (
-            f"ffmpeg executable not found: {e}\n"
-            "Please install ffmpeg and ensure it's in your PATH."
-        )
-        logger.error(error_msg)
-        return None
+        
     except Exception as e:
-        logger.error(f"Failed to export audio: {e}")
+        logger.error(f"Failed to create full audio: {e}")
         return None
+    finally:
+        # Cleanup
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temp dir {temp_dir}: {e}")
 
 
 def create_audio_for_video(
@@ -378,34 +310,42 @@ def create_audio_for_video(
 ) -> Optional[str]:
     """
     Creates audio file synced to video duration.
-    
-    Args:
-        translated_chunks: List of translated chunks with timing info
-        video_duration_ms: Total video duration in milliseconds
-        output_path: Path for the output audio file
-        voice: Voice to use for TTS
-        
-    Returns:
-        Output path on success, None on failure
     """
     result = create_full_audio(translated_chunks, output_path, voice, sync_to_timing=True)
     
-    if result:
-        # Pad with silence if audio is shorter than video
-        try:
-            if not FFMPEG_PATH:
-                logger.warning("ffmpeg not found. Skipping audio padding.")
-                return result
+    if result and os.path.exists(output_path):
+        current_duration_ms = get_audio_duration_ms(output_path)
+        if current_duration_ms < video_duration_ms:
+            # Pad with silence
+            padding_ms = video_duration_ms - current_duration_ms
+            temp_dir = os.path.dirname(output_path)
+            padding_file = os.path.join(temp_dir, "padding_temp.mp3")
+            
+            try:
+                # Generate padding silence
+                silence_cmd = [
+                    FFMPEG_PATH, "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+                    "-t", f"{padding_ms/1000:.3f}", "-y", padding_file
+                ]
+                subprocess.run(silence_cmd, capture_output=True, check=True)
                 
-            audio = AudioSegment.from_mp3(output_path)
-            if len(audio) < video_duration_ms:
-                padding = AudioSegment.silent(duration=video_duration_ms - len(audio))
-                audio = audio + padding
-                audio.export(output_path, format="mp3")
-                logger.info(f"Padded audio to match video duration: {video_duration_ms}ms")
-        except FileNotFoundError as e:
-            logger.warning(f"ffmpeg not found, skipping audio padding: {e}")
-        except Exception as e:
-            logger.warning(f"Failed to pad audio: {e}")
-    
+                # Append padding
+                final_output = os.path.join(temp_dir, "final_padded.mp3")
+                concat_list = os.path.join(temp_dir, "pad_concat.txt")
+                with open(concat_list, "w") as f:
+                    f.write(f"file '{os.path.abspath(output_path).replace('\\', '/')}'\n")
+                    f.write(f"file '{os.path.abspath(padding_file).replace('\\', '/')}'\n")
+                
+                append_cmd = [
+                    FFMPEG_PATH, "-f", "concat", "-safe", "0", "-i", concat_list,
+                    "-c", "copy", "-y", final_output
+                ]
+                subprocess.run(append_cmd, capture_output=True, check=True)
+                
+                shutil.move(final_output, output_path)
+                os.remove(concat_list)
+                os.remove(padding_file)
+            except Exception as e:
+                logger.warning(f"Failed to pad audio: {e}")
+                
     return result
