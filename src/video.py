@@ -19,6 +19,25 @@ if not FFPROBE_PATH:
     logger.warning("ffprobe not found. Video processing may fail.")
 
 
+def get_youtube_config():
+    """Returns YouTube-related configuration for yt-dlp."""
+    config = {}
+    
+    # Cookies
+    cookies_file = os.getenv("YOUTUBE_COOKIES_PATH", "cookies.txt")
+    if os.path.exists(cookies_file):
+        config["cookiefile"] = cookies_file
+        logger.info(f"Using YouTube cookies for yt-dlp from: {cookies_file}")
+    
+    # Proxy
+    proxy = os.getenv("YOUTUBE_PROXY")
+    if proxy:
+        config["proxy"] = proxy
+        logger.info("Using YouTube proxy for yt-dlp")
+        
+    return config
+
+
 def download_video(video_id: str, output_dir: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """
     Downloads a YouTube video and extracts its audio.
@@ -43,6 +62,8 @@ def download_video(video_id: str, output_dir: Optional[str] = None) -> Tuple[Opt
     video_path = os.path.join(output_dir, f"{video_id}.mp4")
     audio_path = os.path.join(output_dir, f"{video_id}_original.mp3")
     
+    config = get_youtube_config()
+    
     # Download video with audio
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -50,6 +71,7 @@ def download_video(video_id: str, output_dir: Optional[str] = None) -> Tuple[Opt
         'quiet': True,
         'no_warnings': True,
         'merge_output_format': 'mp4',
+        **config
     }
     
     try:

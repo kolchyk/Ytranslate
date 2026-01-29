@@ -49,6 +49,22 @@ pip install uv
 streamlit run app.py
 ```
 
+### Working around YouTube IP blocks
+
+If you are running this application on a cloud provider (like Heroku, AWS, etc.), YouTube might block your requests. You can work around this by using cookies or a proxy.
+
+#### Using Cookies (Recommended for Cloud)
+
+1. Install the "Get cookies.txt LOCALLY" extension in your browser (Chrome or Firefox).
+2. Go to YouTube and log in (if not already).
+3. Use the extension to export cookies as `cookies.txt`.
+4. Place the `cookies.txt` file in the root directory of this project.
+5. Alternatively, set the `YOUTUBE_COOKIES_PATH` environment variable to the path of your cookies file.
+
+#### Using Proxies
+
+Set the `YOUTUBE_PROXY` environment variable to your proxy URL (e.g., `http://user:password@host:port`).
+
 ### Common uv Commands
 
 - **Install dependencies**: `uv sync`

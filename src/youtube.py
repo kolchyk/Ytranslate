@@ -3,10 +3,32 @@ YouTube video processing module for extracting video IDs and transcripts.
 """
 import re
 import logging
+import os
 from typing import Optional, List, Dict, Any
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 logger = logging.getLogger(__name__)
+
+
+def get_youtube_config() -> Dict[str, Any]:
+    """
+    Returns YouTube-related configuration (cookies, proxies).
+    """
+    config = {}
+    
+    # Cookies
+    cookies_file = os.getenv("YOUTUBE_COOKIES_PATH", "cookies.txt")
+    if os.path.exists(cookies_file):
+        config["cookies"] = cookies_file
+        logger.info(f"Using YouTube cookies from: {cookies_file}")
+    
+    # Proxies
+    proxy = os.getenv("YOUTUBE_PROXY")
+    if proxy:
+        config["proxies"] = {"http": proxy, "https": proxy}
+        logger.info("Using YouTube proxy")
+        
+    return config
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -47,9 +69,17 @@ def get_transcript(
     if languages is None:
         languages = ['en', 'ru', 'uk']
     
+    config = get_youtube_config()
+    cookies = config.get("cookies")
+    proxies = config.get("proxies")
+    
     try:
-        api = YouTubeTranscriptApi()
-        transcript_list = api.list(video_id)
+        # Pass cookies and proxies if available
+        transcript_list = YouTubeTranscriptApi.list_transcripts(
+            video_id, 
+            cookies=cookies,
+            proxies=proxies
+        )
         
         # Try to find a transcript in requested languages
         try:

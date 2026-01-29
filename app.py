@@ -73,6 +73,17 @@ def main():
     
     # Advanced options
     with st.expander("Расширенные настройки"):
+        # YouTube configuration check
+        cookies_file = os.getenv("YOUTUBE_COOKIES_PATH", "cookies.txt")
+        proxy = os.getenv("YOUTUBE_PROXY")
+        
+        if os.path.exists(cookies_file):
+            st.info(f"✅ Файл cookies найден: `{cookies_file}`")
+        elif proxy:
+            st.info("✅ Прокси настроен")
+        else:
+            st.warning("⚠️ Файл `cookies.txt` не найден. Если YouTube блокирует запросы, добавьте его в корень проекта.")
+
         voice = st.selectbox(
             "Голос озвучки:",
             options=["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
