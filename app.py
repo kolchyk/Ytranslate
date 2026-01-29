@@ -1,4 +1,6 @@
 """
+streamlit run app.py
+
 YTranslate - YouTube Video Translator
 Streamlit web application for translating and dubbing YouTube videos.
 """

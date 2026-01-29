@@ -140,7 +140,7 @@ def download_video(video_id: str, output_dir: Optional[str] = None) -> Tuple[Opt
         'remote_components': ['ejs:github'],
         'extractor_args': {
             'youtube': {
-                'player_client': ['web_safari', 'web', 'android_embedded'],
+                'player_client': ['mweb', 'web', 'web_safari', 'android_embedded'],
                 'player_skip': ['web_creator', 'tv_downgraded']
             }
         },
