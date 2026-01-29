@@ -1,10 +1,20 @@
 import os
 import io
+import shutil
 from openai import OpenAI
 from pydub import AudioSegment
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Check for ffmpeg and ffprobe
+FFMPEG_PATH = shutil.which("ffmpeg")
+FFPROBE_PATH = shutil.which("ffprobe")
+
+if not FFMPEG_PATH:
+    print("Warning: ffmpeg not found. Audio processing may fail.")
+if not FFPROBE_PATH:
+    print("Warning: ffprobe not found. Audio processing may fail.")
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
