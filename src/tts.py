@@ -12,27 +12,40 @@ logger = logging.getLogger(__name__)
 
 # Python 3.13+ compatibility for audioop (required by pydub)
 try:
-    import audioop
+    import audioop  # type: ignore
 except ImportError:
     try:
-        import audioop_lts as audioop
+        import audioop_lts as audioop  # type: ignore
         sys.modules['audioop'] = audioop
     except ImportError:
         try:
-            import pyaudioop as audioop
+            import pyaudioop as audioop  # type: ignore
             sys.modules['audioop'] = audioop
         except ImportError:
             pass
 
-from openai import OpenAI
-from pydub import AudioSegment
-from dotenv import load_dotenv
+from openai import OpenAI  # type: ignore
+from pydub import AudioSegment  # type: ignore
+from dotenv import load_dotenv  # type: ignore
 
 load_dotenv()
 
 # Check for ffmpeg and ffprobe
-FFMPEG_PATH = shutil.which("ffmpeg")
-FFPROBE_PATH = shutil.which("ffprobe")
+def find_binary(name: str) -> Optional[str]:
+    """Finds a binary in the system PATH or common Heroku locations."""
+    path = shutil.which(name)
+    if path:
+        return path
+    
+    # Check common Heroku apt locations
+    heroku_apt_path = os.path.join(os.getcwd(), ".apt", "usr", "bin", name)
+    if os.path.exists(heroku_apt_path):
+        return heroku_apt_path
+        
+    return None
+
+FFMPEG_PATH = find_binary("ffmpeg")
+FFPROBE_PATH = find_binary("ffprobe")
 
 if not FFMPEG_PATH:
     logger.warning("ffmpeg not found. Audio processing may fail.")

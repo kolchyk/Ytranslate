@@ -4,6 +4,13 @@ Streamlit web application for translating and dubbing YouTube videos.
 """
 import streamlit as st
 import os
+import sys
+
+# Add Heroku apt binaries to PATH before importing modules that check for them
+heroku_apt_path = os.path.join(os.getcwd(), ".apt", "usr", "bin")
+if os.path.exists(heroku_apt_path):
+    os.environ["PATH"] = heroku_apt_path + os.pathsep + os.environ["PATH"]
+
 import tempfile
 import logging
 from contextlib import contextmanager

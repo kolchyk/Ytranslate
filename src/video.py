@@ -10,8 +10,27 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # Check for ffmpeg
-FFMPEG_PATH = shutil.which("ffmpeg")
-FFPROBE_PATH = shutil.which("ffprobe")
+def find_binary(name: str) -> Optional[str]:
+    """Finds a binary in the system PATH or common Heroku locations."""
+    path = shutil.which(name)
+    if path:
+        return path
+    
+    # Check common Heroku apt locations
+    # Heroku apt buildpack installs binaries to /app/.apt/usr/bin/
+    heroku_apt_path = os.path.join(os.getcwd(), ".apt", "usr", "bin", name)
+    if os.path.exists(heroku_apt_path):
+        return heroku_apt_path
+        
+    # Check /usr/bin directly as a fallback
+    fallback_path = os.path.join("/usr", "bin", name)
+    if os.path.exists(fallback_path):
+        return fallback_path
+        
+    return None
+
+FFMPEG_PATH = find_binary("ffmpeg")
+FFPROBE_PATH = find_binary("ffprobe")
 
 if not FFMPEG_PATH:
     logger.warning("ffmpeg not found. Video processing will fail.")
