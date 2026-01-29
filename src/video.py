@@ -129,19 +129,40 @@ def download_video(video_id: str, output_dir: Optional[str] = None) -> Tuple[Opt
     
     # Download video with audio
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo+bestaudio/best',
         'outtmpl': video_path,
         'quiet': True,
         'no_warnings': True,
         'merge_output_format': 'mp4',
+        'noplaylist': True,
+        'ffmpeg_location': FFMPEG_PATH,
+        'js_runtimes': ['node'],
         **config
     }
     
     try:
         logger.info(f"Downloading video: {video_id}")
+        logger.info(f"yt-dlp options: {ydl_opts}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video_url])
         
+        # Verify video download
+        if not os.path.exists(video_path):
+            # yt-dlp might have used a different extension if merge failed
+            # though we tried to force it
+            logger.warning(f"Video file not found at expected path: {video_path}")
+            # Try to find any file starting with video_id in output_dir
+            for f in os.listdir(output_dir):
+                if f.startswith(video_id) and not f.endswith("_original.mp3"):
+                    actual_path = os.path.join(output_dir, f)
+                    logger.info(f"Found alternative video file: {actual_path}")
+                    video_path = actual_path
+                    break
+        
+        if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+            logger.error(f"Video download failed or file is empty: {video_path}")
+            return None, None
+            
         # Extract original audio using ffmpeg
         if FFMPEG_PATH and os.path.exists(video_path):
             logger.info("Extracting original audio...")
