@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 
 from src.youtube import extract_video_id, get_transcript, format_transcript_for_translation
 from src.translator import translate_transcript_chunks
-from src.tts import create_full_audio, create_audio_for_video
+from src.tts import create_full_audio, create_audio_for_video, is_ffmpeg_available, get_ffmpeg_installation_instructions
 from src.video import download_video, merge_audio_video, get_video_duration, cleanup_temp_dir
 from dotenv import load_dotenv
 
@@ -55,6 +55,13 @@ def main():
         st.error("Ошибка: OPENAI_API_KEY не найден в переменных окружения.")
         st.info("Пожалуйста, добавьте свой OpenAI API ключ в файл .env или настройки Heroku.")
         return
+    
+    # Check for ffmpeg
+    if not is_ffmpeg_available():
+        st.warning("⚠️ **ffmpeg не найден!**")
+        with st.expander("Как установить ffmpeg", expanded=True):
+            st.markdown(get_ffmpeg_installation_instructions())
+        st.info("💡 Вы можете продолжить, но обработка аудио может завершиться ошибкой.")
 
     # User Input
     video_url = st.text_input(
@@ -268,4 +275,21 @@ def process_video(
 
 
 if __name__ == "__main__":
+    import sys
+    # Check if running in Streamlit runtime context
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        ctx = get_script_run_ctx()
+        if ctx is None:
+            raise RuntimeError("Not running in Streamlit context")
+    except (ImportError, RuntimeError):
+        print("\n" + "="*60)
+        print("ERROR: This is a Streamlit application.")
+        print("="*60)
+        print("\nPlease run this app using:")
+        print("  streamlit run app.py")
+        print("\nOr if you're in a virtual environment:")
+        print("  .venv\\Scripts\\streamlit.exe run app.py")
+        print("\n" + "="*60 + "\n")
+        sys.exit(1)
     main()

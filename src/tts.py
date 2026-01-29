@@ -6,9 +6,13 @@ import io
 import shutil
 import sys
 import logging
+import warnings
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# Suppress pydub warnings about invalid escape sequences (from third-party library)
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="pydub")
 
 # Python 3.13+ compatibility for audioop (required by pydub)
 try:
@@ -24,18 +28,45 @@ except ImportError:
         except ImportError:
             pass
 
-from openai import OpenAI  # type: ignore
-from pydub import AudioSegment  # type: ignore
 from dotenv import load_dotenv  # type: ignore
-
 load_dotenv()
 
-# Check for ffmpeg and ffprobe
+# Check for ffmpeg and ffprobe BEFORE importing pydub
 def find_binary(name: str) -> Optional[str]:
-    """Finds a binary in the system PATH or common Heroku locations."""
+    """Finds a binary in the system PATH or common installation locations."""
+    # First check PATH
     path = shutil.which(name)
     if path:
         return path
+    
+    # Check environment variable
+    env_var = os.getenv(f"{name.upper()}_PATH") or os.getenv("FFMPEG_PATH")
+    if env_var and os.path.exists(env_var):
+        return env_var
+    
+    # Check common Windows installation paths
+    if sys.platform == "win32":
+        # Get user's home directory
+        user_home = os.path.expanduser("~")
+        windows_paths = [
+            # Standard installation paths
+            os.path.join("C:\\", "ffmpeg", "bin", f"{name}.exe"),
+            os.path.join("C:\\", "Program Files", "ffmpeg", "bin", f"{name}.exe"),
+            os.path.join("C:\\", "Program Files (x86)", "ffmpeg", "bin", f"{name}.exe"),
+            # User installation paths
+            os.path.join(user_home, "ffmpeg", "bin", f"{name}.exe"),
+            os.path.join(user_home, "AppData", "Local", "ffmpeg", "bin", f"{name}.exe"),
+            # Chocolatey installation path
+            os.path.join("C:\\", "ProgramData", "chocolatey", "bin", f"{name}.exe"),
+            # Scoop installation path
+            os.path.join(user_home, "scoop", "apps", "ffmpeg", "current", "bin", f"{name}.exe"),
+            # Portable installation in project directory
+            os.path.join(os.getcwd(), "ffmpeg", "bin", f"{name}.exe"),
+            os.path.join(os.path.dirname(os.getcwd()), "ffmpeg", "bin", f"{name}.exe"),
+        ]
+        for win_path in windows_paths:
+            if os.path.exists(win_path):
+                return win_path
     
     # Check common Heroku apt locations
     heroku_apt_path = os.path.join(os.getcwd(), ".apt", "usr", "bin", name)
@@ -44,13 +75,74 @@ def find_binary(name: str) -> Optional[str]:
         
     return None
 
-FFMPEG_PATH = find_binary("ffmpeg")
-FFPROBE_PATH = find_binary("ffprobe")
+# Find binaries and convert to absolute paths immediately
+_ffmpeg_path = find_binary("ffmpeg")
+_ffprobe_path = find_binary("ffprobe")
 
-if not FFMPEG_PATH:
+FFMPEG_PATH = os.path.abspath(_ffmpeg_path) if _ffmpeg_path else None
+FFPROBE_PATH = os.path.abspath(_ffprobe_path) if _ffprobe_path else None
+
+# Suppress RuntimeWarning from pydub about ffmpeg (we handle detection ourselves)
+warnings.filterwarnings("ignore", message=".*Couldn't find ffmpeg.*", category=RuntimeWarning, module="pydub")
+warnings.filterwarnings("ignore", message=".*ffmpeg.*", category=RuntimeWarning, module="pydub")
+
+
+def is_ffmpeg_available() -> bool:
+    """Check if ffmpeg is available for audio processing."""
+    return FFMPEG_PATH is not None and os.path.exists(FFMPEG_PATH)
+
+
+def get_ffmpeg_installation_instructions() -> str:
+    """Get platform-specific instructions for installing ffmpeg."""
+    if sys.platform == "win32":
+        return (
+            "**Установка ffmpeg на Windows:**\n\n"
+            "1. **Chocolatey** (рекомендуется):\n"
+            "   ```powershell\n"
+            "   choco install ffmpeg\n"
+            "   ```\n\n"
+            "2. **Scoop**:\n"
+            "   ```powershell\n"
+            "   scoop install ffmpeg\n"
+            "   ```\n\n"
+            "3. **Ручная установка**:\n"
+            "   - Скачайте с https://ffmpeg.org/download.html\n"
+            "   - Распакуйте в `C:\\ffmpeg`\n"
+            "   - Добавьте `C:\\ffmpeg\\bin` в PATH\n\n"
+            "4. **Портативная версия**:\n"
+            "   - Скачайте и распакуйте в папку проекта `ffmpeg\\bin\\`\n\n"
+            "После установки перезапустите приложение."
+        )
+    else:
+        return (
+            "**Установка ffmpeg:**\n\n"
+            "- Ubuntu/Debian: `sudo apt-get install ffmpeg`\n"
+            "- macOS: `brew install ffmpeg`\n"
+            "- Или скачайте с https://ffmpeg.org/download.html"
+        )
+
+# Now import pydub after configuring paths
+from openai import OpenAI  # type: ignore
+from pydub import AudioSegment  # type: ignore
+
+# Configure pydub to use found ffmpeg/ffprobe paths
+if FFMPEG_PATH:
+    AudioSegment.converter = FFMPEG_PATH
+    logger.info(f"Using ffmpeg at: {FFMPEG_PATH}")
+else:
     logger.warning("ffmpeg not found. Audio processing may fail.")
-if not FFPROBE_PATH:
+    
+if FFPROBE_PATH:
+    AudioSegment.ffprobe = FFPROBE_PATH
+    logger.info(f"Using ffprobe at: {FFPROBE_PATH}")
+else:
     logger.warning("ffprobe not found. Audio processing may fail.")
+    
+# Also set environment variable as fallback (some pydub operations use subprocess)
+if FFMPEG_PATH:
+    os.environ["FFMPEG_BINARY"] = FFMPEG_PATH
+if FFPROBE_PATH:
+    os.environ["FFPROBE_BINARY"] = FFPROBE_PATH
 
 
 def get_openai_client() -> OpenAI:
@@ -90,7 +182,40 @@ def generate_audio(
         
         # Read the response content into a byte stream
         audio_data = io.BytesIO(response.content)
+        
+        # Check if ffmpeg is available before trying to process audio
+        if not FFMPEG_PATH:
+            error_msg = (
+                "ffmpeg not found. Please install ffmpeg to process audio files.\n"
+                f"{get_ffmpeg_installation_instructions()}"
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Ensure ffprobe is also available (pydub needs it for some operations)
+        if not FFPROBE_PATH:
+            logger.warning("ffprobe not found. Some audio operations may fail.")
+        
         return AudioSegment.from_file(audio_data, format="mp3")
+    except FileNotFoundError as e:
+        error_msg = (
+            f"ffmpeg executable not found: {e}\n"
+            f"{get_ffmpeg_installation_instructions()}"
+        )
+        logger.error(error_msg)
+        return None
+    except Exception as e:
+        # Check if error is related to ffmpeg/ffprobe
+        error_str = str(e).lower()
+        if "ffmpeg" in error_str or "ffprobe" in error_str or "couldn't find" in error_str:
+            error_msg = (
+                f"Audio processing failed - ffmpeg/ffprobe issue: {e}\n"
+                f"{get_ffmpeg_installation_instructions()}"
+            )
+            logger.error(error_msg)
+        else:
+            logger.error(f"Error during TTS generation: {e}")
+        return None
     except Exception as e:
         logger.error(f"Error during TTS generation: {e}")
         return None
@@ -206,9 +331,25 @@ def create_full_audio(
             logger.warning(f"Failed to generate audio for chunk {i}")
     
     try:
+        if not FFMPEG_PATH:
+            error_msg = (
+                "ffmpeg not found. Cannot export audio file.\n"
+                "Please install ffmpeg:\n"
+                "Windows: Download from https://ffmpeg.org/download.html or use: choco install ffmpeg"
+            )
+            logger.error(error_msg)
+            return None
+        
         full_audio.export(output_path, format="mp3")
         logger.info(f"Audio saved to: {output_path} (duration: {len(full_audio)}ms)")
         return output_path
+    except FileNotFoundError as e:
+        error_msg = (
+            f"ffmpeg executable not found: {e}\n"
+            "Please install ffmpeg and ensure it's in your PATH."
+        )
+        logger.error(error_msg)
+        return None
     except Exception as e:
         logger.error(f"Failed to export audio: {e}")
         return None
@@ -237,12 +378,18 @@ def create_audio_for_video(
     if result:
         # Pad with silence if audio is shorter than video
         try:
+            if not FFMPEG_PATH:
+                logger.warning("ffmpeg not found. Skipping audio padding.")
+                return result
+                
             audio = AudioSegment.from_mp3(output_path)
             if len(audio) < video_duration_ms:
                 padding = AudioSegment.silent(duration=video_duration_ms - len(audio))
                 audio = audio + padding
                 audio.export(output_path, format="mp3")
                 logger.info(f"Padded audio to match video duration: {video_duration_ms}ms")
+        except FileNotFoundError as e:
+            logger.warning(f"ffmpeg not found, skipping audio padding: {e}")
         except Exception as e:
             logger.warning(f"Failed to pad audio: {e}")
     

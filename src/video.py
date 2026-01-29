@@ -2,6 +2,7 @@
 Video processing module for downloading YouTube videos and merging audio.
 """
 import os
+import sys
 import shutil
 import tempfile
 import logging
@@ -11,10 +12,40 @@ logger = logging.getLogger(__name__)
 
 # Check for ffmpeg
 def find_binary(name: str) -> Optional[str]:
-    """Finds a binary in the system PATH or common Heroku locations."""
+    """Finds a binary in the system PATH or common installation locations."""
+    # First check PATH
     path = shutil.which(name)
     if path:
         return path
+    
+    # Check environment variable
+    env_var = os.getenv(f"{name.upper()}_PATH") or os.getenv("FFMPEG_PATH")
+    if env_var and os.path.exists(env_var):
+        return env_var
+    
+    # Check common Windows installation paths
+    if sys.platform == "win32":
+        # Get user's home directory
+        user_home = os.path.expanduser("~")
+        windows_paths = [
+            # Standard installation paths
+            os.path.join("C:\\", "ffmpeg", "bin", f"{name}.exe"),
+            os.path.join("C:\\", "Program Files", "ffmpeg", "bin", f"{name}.exe"),
+            os.path.join("C:\\", "Program Files (x86)", "ffmpeg", "bin", f"{name}.exe"),
+            # User installation paths
+            os.path.join(user_home, "ffmpeg", "bin", f"{name}.exe"),
+            os.path.join(user_home, "AppData", "Local", "ffmpeg", "bin", f"{name}.exe"),
+            # Chocolatey installation path
+            os.path.join("C:\\", "ProgramData", "chocolatey", "bin", f"{name}.exe"),
+            # Scoop installation path
+            os.path.join(user_home, "scoop", "apps", "ffmpeg", "current", "bin", f"{name}.exe"),
+            # Portable installation in project directory
+            os.path.join(os.getcwd(), "ffmpeg", "bin", f"{name}.exe"),
+            os.path.join(os.path.dirname(os.getcwd()), "ffmpeg", "bin", f"{name}.exe"),
+        ]
+        for win_path in windows_paths:
+            if os.path.exists(win_path):
+                return win_path
     
     # Check common Heroku apt locations
     # Heroku apt buildpack installs binaries to /app/.apt/usr/bin/
@@ -22,15 +53,20 @@ def find_binary(name: str) -> Optional[str]:
     if os.path.exists(heroku_apt_path):
         return heroku_apt_path
         
-    # Check /usr/bin directly as a fallback
-    fallback_path = os.path.join("/usr", "bin", name)
-    if os.path.exists(fallback_path):
-        return fallback_path
+    # Check /usr/bin directly as a fallback (Unix/Linux)
+    if sys.platform != "win32":
+        fallback_path = os.path.join("/usr", "bin", name)
+        if os.path.exists(fallback_path):
+            return fallback_path
         
     return None
 
-FFMPEG_PATH = find_binary("ffmpeg")
-FFPROBE_PATH = find_binary("ffprobe")
+# Find binaries and convert to absolute paths immediately
+_ffmpeg_path = find_binary("ffmpeg")
+_ffprobe_path = find_binary("ffprobe")
+
+FFMPEG_PATH = os.path.abspath(_ffmpeg_path) if _ffmpeg_path else None
+FFPROBE_PATH = os.path.abspath(_ffprobe_path) if _ffprobe_path else None
 
 if not FFMPEG_PATH:
     logger.warning("ffmpeg not found. Video processing will fail.")

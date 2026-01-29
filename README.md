@@ -20,7 +20,33 @@ pip install uv
 
 ### Installation
 
+**⚠️ Important for OneDrive Users:** If your project is in a OneDrive folder, OneDrive doesn't support hard links used by `uv`. You have two options:
+
+**Option 1: Exclude .venv from OneDrive sync (Easiest)**
+1. Run `uv sync` normally (it will fail initially)
+2. Right-click the `.venv` folder in File Explorer
+3. Select "Always keep on this device" (this prevents OneDrive from syncing it)
+4. Run `uv sync` again
+
+**Option 2: Use the workaround script**
+```powershell
+.\uv-sync.ps1
+```
+This script creates the virtual environment outside OneDrive (`%LOCALAPPDATA%\uv\venvs\YTranslate`) and creates a symlink in your project.
+
 1. **Sync dependencies** (creates virtual environment and installs packages):
+   
+   **For OneDrive users:**
+   ```powershell
+   # Option 1: Exclude .venv from sync (recommended)
+   uv sync
+   # Then right-click .venv → "Always keep on this device"
+   
+   # Option 2: Use workaround script
+   .\uv-sync.ps1
+   ```
+   
+   **For non-OneDrive users:**
    ```bash
    uv sync
    ```
