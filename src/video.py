@@ -13,15 +13,21 @@ logger = logging.getLogger(__name__)
 # Check for ffmpeg
 def find_binary(name: str) -> Optional[str]:
     """Finds a binary in the system PATH or common installation locations."""
-    # First check PATH
-    path = shutil.which(name)
-    if path:
-        return path
+    # Check Heroku apt locations FIRST (before PATH check, as it may not be in PATH yet)
+    # Heroku apt buildpack installs binaries to /app/.apt/usr/bin/
+    heroku_apt_path = os.path.join(os.getcwd(), ".apt", "usr", "bin", name)
+    if os.path.exists(heroku_apt_path):
+        return heroku_apt_path
     
     # Check environment variable
     env_var = os.getenv(f"{name.upper()}_PATH") or os.getenv("FFMPEG_PATH")
     if env_var and os.path.exists(env_var):
         return env_var
+    
+    # Then check PATH
+    path = shutil.which(name)
+    if path:
+        return path
     
     # Check common Windows installation paths
     if sys.platform == "win32":
@@ -46,12 +52,6 @@ def find_binary(name: str) -> Optional[str]:
         for win_path in windows_paths:
             if os.path.exists(win_path):
                 return win_path
-    
-    # Check common Heroku apt locations
-    # Heroku apt buildpack installs binaries to /app/.apt/usr/bin/
-    heroku_apt_path = os.path.join(os.getcwd(), ".apt", "usr", "bin", name)
-    if os.path.exists(heroku_apt_path):
-        return heroku_apt_path
         
     # Check /usr/bin directly as a fallback (Unix/Linux)
     if sys.platform != "win32":

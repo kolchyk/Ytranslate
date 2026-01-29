@@ -57,8 +57,12 @@ def main():
         st.info("Пожалуйста, добавьте свой OpenAI API ключ в файл .env или настройки Heroku.")
         return
     
-    # Check for ffmpeg
-    if not is_ffmpeg_available():
+    # Check for ffmpeg (skip warning on Heroku where it's installed via Aptfile)
+    is_heroku = os.getenv("DYNO") is not None or os.getenv("HEROKU_APP_NAME") is not None
+    heroku_apt_ffmpeg = os.path.join(os.getcwd(), ".apt", "usr", "bin", "ffmpeg")
+    is_heroku_with_apt = is_heroku and os.path.exists(heroku_apt_ffmpeg)
+    
+    if not is_ffmpeg_available() and not is_heroku_with_apt:
         st.warning("⚠️ **ffmpeg не найден!**")
         with st.expander("Как установить ffmpeg", expanded=True):
             st.markdown(get_ffmpeg_installation_instructions())
