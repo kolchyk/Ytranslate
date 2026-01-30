@@ -6,3 +6,5 @@ python-dotenv>=1.0.1
 requests>=2.32.3
 gunicorn>=23.0.0
 yt-dlp>=2025.12.8
+pdfplumber>=0.10.0
+reportlab>=4.0.0

@@ -18,13 +18,14 @@ def get_openai_client() -> OpenAI:
     return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-def translate_text(text: str, target_language: str = "ru") -> str:
+def translate_text(text: str, target_language: str = "ru", is_article: bool = False) -> str:
     """
     Translates text to the target language using OpenAI GPT.
     
     Args:
         text: Text to translate
         target_language: Target language code ('ru' or 'uk')
+        is_article: Whether the text is from an article (uses specialized prompt)
         
     Returns:
         Translated text or original text on failure
@@ -39,29 +40,71 @@ def translate_text(text: str, target_language: str = "ru") -> str:
     
     target_lang_full = language_map.get(target_language, "Russian")
     
-    prompt = (
-        f"Translate the following text from a YouTube video transcript into {target_lang_full}. "
-        f"The translation should be natural-sounding for voice-over, simplified if necessary, "
-        f"and maintain the original meaning. Only return the translated text.\n\nText:\n{text}"
-    )
+    if is_article:
+        prompt = (
+            f"Translate the following article text into {target_lang_full}. "
+            f"The translation should be professional, maintain technical terminology, "
+            f"and be suitable for an educational or scientific context. "
+            f"Only return the translated text.\n\nText:\n{text}"
+        )
+    else:
+        prompt = (
+            f"Translate the following text from a YouTube video transcript into {target_lang_full}. "
+            f"The translation should be natural-sounding for voice-over, simplified if necessary, "
+            f"and maintain the original meaning. Only return the translated text.\n\nText:\n{text}"
+        )
     
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
-            model="gpt-4.1-mini-2025-04-14",
+            model="gpt-5-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a professional translator specializing in video dubbing and subtitles."
+                    "content": "You are a professional translator specializing in " + 
+                               ("scientific and technical articles." if is_article else "video dubbing and subtitles.")
                 },
                 {"role": "user", "content": prompt}
-            ],
-            temperature=0.3
+            ]
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Error during translation: {e}")
         return text  # Fallback to original text
+
+
+def translate_article_chunks(
+    chunks: List[Dict[str, Any]],
+    target_language: str = "ru"
+) -> List[Dict[str, Any]]:
+    """
+    Translates a list of article chunks.
+    
+    Args:
+        chunks: List of chunks (each chunk is a dict with 'text')
+        target_language: Target language code
+        
+    Returns:
+        List of translated chunks
+    """
+    if not chunks:
+        return []
+
+    def process_chunk(i, chunk):
+        translated_text = translate_text(chunk['text'], target_language, is_article=True)
+        return {
+            'index': i,
+            'text': translated_text,
+            'original_text': chunk['text']
+        }
+
+    with ThreadPoolExecutor(max_workers=min(len(chunks), 10)) as executor:
+        results = list(executor.map(lambda p: process_chunk(*p), enumerate(chunks)))
+    
+    results.sort(key=lambda x: x['index'])
+    for r in results:
+        del r['index']
+    return results
 
 
 def translate_transcript_chunks(

@@ -135,8 +135,8 @@ def get_audio_duration_ms(file_path: str) -> int:
 def generate_audio(
     text: str,
     voice: str = "alloy",
-    model: str = "gpt-4o-mini-tts",
-    speed: float = 1.0,
+    model: str = "tts-1-hd",#"gpt-4o-mini-tts"
+    speed: float = 1.1,
     output_dir: Optional[str] = None
 ) -> Optional[str]:
     """

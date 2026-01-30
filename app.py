@@ -1,28 +1,28 @@
 """
 streamlit run app.py
 
-YTranslate - YouTube Video Translator
-Streamlit web application for translating and dubbing YouTube videos.
+YTranslate - YouTube Video & PDF Article Translator
+Streamlit web application for translating and dubbing YouTube videos and PDF articles.
 """
 import streamlit as st
 import os
 import sys
+import tempfile
+import logging
+from contextlib import contextmanager
+from typing import Optional, Tuple, List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 
 # Add Heroku apt binaries to PATH before importing modules that check for them
 heroku_apt_path = os.path.join(os.getcwd(), ".apt", "usr", "bin")
 if os.path.exists(heroku_apt_path):
     os.environ["PATH"] = heroku_apt_path + os.pathsep + os.environ["PATH"]
 
-import tempfile
-import logging
-from contextlib import contextmanager
-from typing import Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor
-
 from src.youtube import extract_video_id, get_transcript, format_transcript_for_translation
-from src.translator import translate_transcript_chunks
+from src.translator import translate_transcript_chunks, translate_article_chunks
 from src.tts import create_full_audio, create_audio_for_video, is_ffmpeg_available, get_ffmpeg_installation_instructions
 from src.video import download_video, merge_audio_video, get_video_duration, cleanup_temp_dir
+from src.pdf import extract_text_from_pdf, split_text_into_chunks, create_translated_pdf
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="YTranslate - YouTube Video Translator", page_icon="🎥")
+st.set_page_config(page_title="YTranslate - Translator & Dubber", page_icon="🎥")
 
 
 @contextmanager
@@ -50,7 +50,6 @@ def temp_directory():
 
 def main():
     st.title("🎥 YTranslate")
-    st.subheader("Перевод и озвучка YouTube видео")
     
     # Check for API Key
     api_key = os.getenv("OPENAI_API_KEY")
@@ -70,10 +69,23 @@ def main():
             st.markdown(get_ffmpeg_installation_instructions())
         st.info("💡 Вы можете продолжить, но обработка аудио может завершиться ошибкой.")
 
+    tab_yt, tab_pdf = st.tabs(["📺 YouTube видео", "📄 PDF статьи"])
+    
+    with tab_yt:
+        youtube_tab()
+        
+    with tab_pdf:
+        pdf_tab()
+
+
+def youtube_tab():
+    st.subheader("Перевод и озвучка YouTube видео")
+    
     # User Input
     video_url = st.text_input(
         "Введите URL YouTube видео:",
-        placeholder="https://www.youtube.com/watch?v=..."
+        placeholder="https://www.youtube.com/watch?v=...",
+        key="yt_url"
     )
     
     col1, col2 = st.columns(2)
@@ -82,14 +94,16 @@ def main():
         target_language = st.selectbox(
             "Выберите язык перевода:",
             options=["ru", "uk"],
-            format_func=lambda x: "Русский" if x == "ru" else "Украинский"
+            format_func=lambda x: "Русский" if x == "ru" else "Украинский",
+            key="yt_lang"
         )
     
     with col2:
         output_format = st.selectbox(
             "Формат вывода:",
             options=["audio", "video"],
-            format_func=lambda x: "Только аудио (MP3)" if x == "audio" else "Видео с озвучкой (MP4)"
+            format_func=lambda x: "Только аудио (MP3)" if x == "audio" else "Видео с озвучкой (MP4)",
+            key="yt_format"
         )
     
     # Advanced options
@@ -119,14 +133,16 @@ def main():
         voice = st.selectbox(
             "Голос озвучки:",
             options=["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
-            index=0
+            index=0,
+            key="yt_voice"
         )
         
         if output_format == "video":
             keep_original_audio = st.checkbox(
                 "Сохранить оригинальное аудио на фоне",
                 value=True,
-                help="Оригинальный звук будет приглушен и добавлен на фон"
+                help="Оригинальный звук будет приглушен и добавлен на фон",
+                key="yt_keep_audio"
             )
             original_volume = st.slider(
                 "Громкость оригинального звука:",
@@ -134,13 +150,14 @@ def main():
                 max_value=0.5,
                 value=0.1,
                 step=0.05,
-                disabled=not keep_original_audio
+                disabled=not keep_original_audio,
+                key="yt_vol"
             )
         else:
             keep_original_audio = False
             original_volume = 0.0
     
-    if st.button("Перевести и озвучить", type="primary"):
+    if st.button("Перевести и озвучить видео", type="primary", key="yt_btn"):
         if not video_url:
             st.warning("Пожалуйста, введите URL видео.")
             return
@@ -158,6 +175,37 @@ def main():
             keep_original_audio=keep_original_audio,
             original_volume=original_volume
         )
+
+
+def pdf_tab():
+    st.subheader("Перевод и озвучка PDF статей")
+    
+    uploaded_file = st.file_uploader("Выберите PDF файл (на английском):", type="pdf")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        target_language = st.selectbox(
+            "Выберите язык перевода:",
+            options=["ru", "uk"],
+            format_func=lambda x: "Русский" if x == "ru" else "Украинский",
+            key="pdf_lang"
+        )
+    
+    with col2:
+        voice = st.selectbox(
+            "Голос озвучки:",
+            options=["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
+            index=0,
+            key="pdf_voice"
+        )
+        
+    if st.button("Перевести и озвучить статью", type="primary", key="pdf_btn"):
+        if not uploaded_file:
+            st.warning("Пожалуйста, загрузите PDF файл.")
+            return
+            
+        process_pdf_article_ui(uploaded_file, target_language, voice)
 
 
 def process_video(
@@ -256,41 +304,201 @@ def process_video(
                 
                 status.update(label="Готово!", state="complete", expanded=False)
             
-            # Display Results
-            st.success("Перевод завершен!")
-            
-            # Read file for display and download
+            # Read file for display and download BEFORE cleanup
             with open(output_path, "rb") as f:
                 output_bytes = f.read()
             
+            # Store in session state to persist after temp directory cleanup
+            session_key = f"media_{video_id}_{output_format}"
+            st.session_state[session_key] = {
+                'bytes': output_bytes,
+                'mime': output_mime,
+                'ext': output_ext,
+                'filename': f"translated_{video_id}.{output_ext}",
+                'chunks': translated_chunks
+            }
+        
+        # Display Results (outside temp_directory context)
+        st.success("Перевод завершен!")
+        
+        # Retrieve from session state
+        session_key = f"media_{video_id}_{output_format}"
+        if session_key in st.session_state:
+            media_data = st.session_state[session_key]
+            output_bytes = media_data['bytes']
+            output_mime = media_data['mime']
+            output_ext = media_data['ext']
+            filename = media_data['filename']
+            
             # Media Player
-            if output_format == "video":
-                st.video(output_bytes, format="video/mp4")
-            else:
-                st.audio(output_bytes, format="audio/mp3")
+            try:
+                if output_format == "video":
+                    st.video(output_bytes, format="video/mp4")
+                else:
+                    st.audio(output_bytes, format="audio/mp3")
+            except Exception as e:
+                # Handle Streamlit media file storage errors gracefully
+                logger.warning(f"Error displaying media: {e}")
+                st.info("Медиа файл доступен для скачивания ниже.")
             
             # Download Button
             st.download_button(
                 label=f"Скачать {output_ext.upper()}",
                 data=output_bytes,
-                file_name=f"translated_{video_id}.{output_ext}",
+                file_name=filename,
                 mime=output_mime
             )
             
             # Show translated text
-            with st.expander("Показать переведенный текст"):
-                for i, chunk in enumerate(translated_chunks):
-                    st.markdown(f"**[{chunk['start']:.1f}s - {chunk.get('end', 0):.1f}s]**")
-                    st.text(chunk['text'])
-                    st.divider()
+            if 'chunks' in media_data:
+                with st.expander("Показать переведенный текст"):
+                    for i, chunk in enumerate(media_data['chunks']):
+                        st.markdown(f"**[{chunk['start']:.1f}s - {chunk.get('end', 0):.1f}s]**")
+                        st.text(chunk['text'])
+                        st.divider()
                     
     except Exception as e:
         logger.exception("Error processing video")
         st.error(f"Произошла ошибка: {str(e)}")
 
 
+def process_pdf_article_ui(uploaded_file, target_language: str, voice: str):
+    """
+    UI wrapper for PDF processing.
+    """
+    try:
+        # Get original filename without extension
+        original_filename = uploaded_file.name
+        base_name = os.path.splitext(original_filename)[0]
+        
+        # Clean filename: remove invalid characters for Windows filesystem
+        invalid_chars = '<>:"/\\|?*'
+        for char in invalid_chars:
+            base_name = base_name.replace(char, '_')
+        
+        with temp_directory() as temp_dir:
+            with st.status("Обработка PDF статьи...", expanded=True) as status:
+                
+                # 1. Extract Text
+                st.write("📝 Извлечение текста из PDF...")
+                text = extract_text_from_pdf(uploaded_file)
+                if not text:
+                    st.error("Не удалось извлечь текст из PDF.")
+                    status.update(label="Ошибка!", state="error")
+                    return
+                
+                # 2. Split into chunks
+                st.write("📋 Подготовка текста...")
+                chunks = split_text_into_chunks(text)
+                
+                # 3. Translate
+                lang_name = 'русский' if target_language == 'ru' else 'украинский'
+                st.write(f"🌐 Перевод на {lang_name}...")
+                translated_chunks = translate_article_chunks(chunks, target_language)
+                
+                # 4. Create translated PDF
+                st.write("📄 Создание переведенного PDF...")
+                pdf_filename = f"{base_name}_translated.pdf"
+                pdf_path = os.path.join(temp_dir, pdf_filename)
+                
+                if not create_translated_pdf(translated_chunks, pdf_path):
+                    st.error("Не удалось создать переведенный PDF.")
+                    status.update(label="Ошибка!", state="error")
+                    return
+                
+                # 5. TTS
+                st.write("🔊 Генерация озвучки (OpenAI TTS)...")
+                audio_filename = f"{base_name}.mp3"
+                audio_path = os.path.join(temp_dir, audio_filename)
+                
+                # For articles, we don't have timing, so we create a sequential audio
+                # We need to add dummy timing for create_full_audio
+                timed_chunks = []
+                current_time = 0.0
+                for chunk in translated_chunks:
+                    timed_chunks.append({
+                        'start': current_time,
+                        'text': chunk['text']
+                    })
+                    # Estimate duration for next chunk start (rough)
+                    current_time += len(chunk['text']) / 15  # ~15 chars per second
+                
+                create_full_audio(timed_chunks, audio_path, voice, sync_to_timing=False)
+                
+                if not os.path.exists(audio_path):
+                    st.error("Не удалось сгенерировать аудио.")
+                    status.update(label="Ошибка!", state="error")
+                    return
+                
+                status.update(label="Готово!", state="complete", expanded=False)
+            
+            # Read files for display and download BEFORE cleanup
+            with open(audio_path, "rb") as f:
+                audio_bytes = f.read()
+            
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            
+            # Store in session state to persist after temp directory cleanup
+            session_key = "pdf_article_files"
+            st.session_state[session_key] = {
+                'audio_bytes': audio_bytes,
+                'pdf_bytes': pdf_bytes,
+                'audio_filename': audio_filename,
+                'pdf_filename': pdf_filename,
+                'chunks': translated_chunks
+            }
+        
+        # Display Results (outside temp_directory context)
+        st.success("Перевод статьи завершен!")
+        
+        # Retrieve from session state
+        session_key = "pdf_article_files"
+        if session_key in st.session_state:
+            media_data = st.session_state[session_key]
+            audio_bytes = media_data['audio_bytes']
+            pdf_bytes = media_data['pdf_bytes']
+            
+            # Display audio player
+            try:
+                st.audio(audio_bytes, format="audio/mp3")
+            except Exception as e:
+                # Handle Streamlit media file storage errors gracefully
+                logger.warning(f"Error displaying audio: {e}")
+                st.info("Аудио файл доступен для скачивания ниже.")
+            
+            # Download buttons
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.download_button(
+                    label="📄 Скачать переведенный PDF",
+                    data=pdf_bytes,
+                    file_name=media_data['pdf_filename'],
+                    mime='application/pdf'
+                )
+            
+            with col2:
+                st.download_button(
+                    label="🔊 Скачать аудио (MP3)",
+                    data=audio_bytes,
+                    file_name=media_data['audio_filename'],
+                    mime='audio/mp3'
+                )
+            
+            # Show translated text
+            if 'chunks' in media_data:
+                with st.expander("Показать переведенный текст"):
+                    for chunk in media_data['chunks']:
+                        st.text(chunk['text'])
+                        st.divider()
+                    
+    except Exception as e:
+        logger.exception("Error processing PDF")
+        st.error(f"Произошла ошибка: {str(e)}")
+
+
 if __name__ == "__main__":
-    import sys
     # Check if running in Streamlit runtime context
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
