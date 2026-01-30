@@ -4,14 +4,16 @@ version = "0.1.0"
 description = "YouTube Video Translator and TTS"
 requires-python = ">=3.14"
 dependencies = [
-    "streamlit>=1.5.0",
+    "streamlit>=1.53.1",
+    "blinker>=1.7.0",
     "youtube-transcript-api==1.2.4",
-    "openai>=1.0.0",
-    "python-dotenv>=1.0.0",
-    "requests>=2.28.0",
+    "openai>=2.16.0",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.3",
+    "gunicorn>=23.0.0",
     "yt-dlp>=2025.12.8",
-    "pdfplumber>=0.11.9",
-    "reportlab>=4.4.9",
+    "pdfplumber>=0.10.0",
+    "reportlab>=4.0.0",
 ]
 
 [build-system]
