@@ -2,7 +2,6 @@
 Module for translating documents using DeepL API.
 """
 import os
-import time
 import logging
 import deepl
 from dotenv import load_dotenv
@@ -16,7 +15,7 @@ def get_deepl_translator():
     auth_key = os.getenv("DEEPL_API_KEY")
     if not auth_key:
         raise ValueError("DEEPL_API_KEY not found in environment variables.")
-    return deepl.Translator(auth_key)
+    return deepl.DeepLClient(auth_key)
 
 def translate_pdf_with_deepl(pdf_file, target_language: str = "ru") -> bytes:
     """
@@ -48,7 +47,7 @@ def translate_pdf_with_deepl(pdf_file, target_language: str = "ru") -> bytes:
         # Use delete=False so we can read it after translate_document completes
         tmp_output = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         output_path = tmp_output.name
-        tmp_output.close()  # Close the file so translate_document can write to it
+        tmp_output.close()  # Close the file so we can open it in write mode
         
         try:
             # Ensure pdf_file is a file-like object
@@ -65,13 +64,14 @@ def translate_pdf_with_deepl(pdf_file, target_language: str = "ru") -> bytes:
                     input_file.seek(0)
             
             try:
-                # DeepL SDK's translate_document writes to the output_path
-                # The output_path should be a string path, not a file object
-                translator.translate_document(
-                    input_file,
-                    output_path,
-                    target_lang=deepl_target_lang
-                )
+                # DeepL SDK's translate_document requires file objects for both input and output
+                # Open output file in write binary mode
+                with open(output_path, "wb") as output_file:
+                    translator.translate_document(
+                        input_file,
+                        output_file,
+                        target_lang=deepl_target_lang
+                    )
             finally:
                 if should_close_input:
                     input_file.close()
