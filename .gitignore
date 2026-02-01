@@ -24,7 +24,7 @@ Thumbs.db
 
 # uv
 .uv/
-uv.lock
+# uv.lock should be committed for Heroku
 
 # Temporary files
 *.tmp
